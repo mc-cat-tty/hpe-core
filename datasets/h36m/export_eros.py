@@ -1,18 +1,18 @@
 """
 Copyright (C) 2021 Event-driven Perception for Robotics
-Author:
-    Gaurvi Goyal
+Author: Gaurvi Goyal
 
-LICENSE GOES HERE
+Refactor by: @mc-cat-tty
 """
 
-from tqdm import tqdm
 import argparse
-import cv2
 import json
-import pathlib
-import os
+import sys
+from pathlib import Path
+
+import cv2
 import numpy as np
+from tqdm import tqdm
 
 from datasets.utils.parsing import import_yarp_skeleton_data, batchIterator
 from datasets.utils.events_representation import EROS
@@ -20,30 +20,24 @@ from datasets.utils.export import ensure_location, str2bool, get_movenet_keypoin
 from bimvee.importIitYarp import importIitYarp as import_dvs
 
 
-def export_to_eros(data_dvs_file, data_vicon_file, output_path, skip=None, args=None, output_json=None):
-    if skip == None:
-        skip = 1
-    else:
-        skip = int(skip) + 1
-    action_name = data_dvs_file.split(os.sep)[-2]
+def export_to_eros(dvs_dir: Path, skeleton_file: Path, output_path: Path, args, output_json: Path = None):
+    skip = 1 if args.skip_image is None else args.skip_image + 1
+    action_name = dvs_dir.parent.name
 
-    data_vicon = import_yarp_skeleton_data(pathlib.Path(data_vicon_file))
-    data_dvs = import_dvs(filePathOrName=data_dvs_file)
+    data_vicon = import_yarp_skeleton_data(skeleton_file)
+    data_dvs = import_dvs(filePathOrName=str(dvs_dir))
     data_dvs['data']['left']['dvs']['ts'] /= args.ts_scaler
     iterator = batchIterator(data_dvs['data']['left']['dvs'], data_vicon)
     eros = EROS(kernel_size=args.eros_kernel, frame_width=args.frame_width, frame_height=args.frame_height)
 
     poses_movenet = []
     if args.write_video:
-        output_path_video = os.path.join(output_path, action_name + '.mp4')
-        print(output_path_video)
-        video_out = cv2.VideoWriter(output_path_video, cv2.VideoWriter_fourcc(*'avc1'), args.fps,
-                                    (args.frame_width, args.frame_height))
+        video_out = cv2.VideoWriter(str(output_path / f'{action_name}.mp4'), cv2.VideoWriter_fourcc(*'avc1'),
+                                    args.fps, (args.frame_width, args.frame_height))
 
     for fi, (events, pose, batch_size) in enumerate(iterator):
-        # for fi, (events, pose, ts) in enumerate(iterator):
         if args.dev:
-            print('frame: ', fi)
+            tqdm.write(f'frame: {fi}')
         for ei in range(batch_size):
             eros.update(vx=int(events['x'][ei]), vy=int(events['y'][ei]))
 
@@ -56,7 +50,7 @@ def export_to_eros(data_dvs_file, data_vicon_file, output_path, skip=None, args=
 
         frame = eros.get_frame()
         sample_anno = {}
-        sample_anno['img_name'] = action_name + '_' + str(fi).zfill(5) + '.jpg'
+        sample_anno['img_name'] = f'{action_name}_{str(fi).zfill(5)}.jpg'
         sample_anno['ts'] = pose['ts']
         sample_anno['keypoints'] = get_movenet_keypoints(pose, args.frame_height, args.frame_width,
                                                          upperbody=args.upperbody)
@@ -65,22 +59,20 @@ def export_to_eros(data_dvs_file, data_vicon_file, output_path, skip=None, args=
         sample_anno['keypoints_prev'] = kps_old
         sample_anno['original_sample'] = action_name
 
-        # print(sample_anno)
         frame = cv2.GaussianBlur(frame, (args.gauss_kernel, args.gauss_kernel), 0)
         if args.write_images:
-            cv2.imwrite(os.path.join(output_path, sample_anno['img_name']), frame)
+            cv2.imwrite(str(output_path / sample_anno['img_name']), frame)
         if args.dev:
             keypoints = np.reshape(sample_anno['keypoints'], [-1, 3])
             h, w = frame.shape
-            for i in range(len(keypoints)):
-                frame = cv2.circle(frame, [int(keypoints[i, 0] * w), int(keypoints[i, 1] * h)], 1, (255, 0, 0), 2)
+            for keypoint in keypoints:
+                frame = cv2.circle(frame, [int(keypoint[0] * w), int(keypoint[1] * h)], 1, (255, 0, 0), 2)
             frame = cv2.circle(frame, [int(sample_anno['center'][0] * w), int(sample_anno['center'][1] * h)], 1,
                                (255, 0, 0), 4)
             cv2.imshow('', frame)
             cv2.waitKey(1)
         if args.write_video:
             video_out.write(frame)
-            print('writing')
         poses_movenet.append(sample_anno)
 
         kps_old = sample_anno['keypoints']
@@ -88,110 +80,88 @@ def export_to_eros(data_dvs_file, data_vicon_file, output_path, skip=None, args=
     if args.write_video:
         video_out.release()
 
-    # Writing the GT
+    # Writing the GT, appending to the previous annotations if any
     if args.write_annotation and output_json is not None:
-        if args.from_scratch:
-            with open(str(output_json), 'w') as f:
-                json.dump(poses_movenet, f, ensure_ascii=False)
-                args.from_scratch = False
-        else:
-            with open(str(output_json), 'r+') as f:
-                poses = json.load(f)
-                poses.extend(poses_movenet)
-                f.seek(0)
-                json.dump(poses, f, ensure_ascii=False)
-    return
+        poses = json.loads(output_json.read_text()) if output_json.exists() else []
+        poses.extend(poses_movenet)
+        output_json.write_text(json.dumps(poses, ensure_ascii=False))
 
 
-def setup_testing_list(path):
-    if not os.path.exists(path):
-        return []
-    with open(str(path), 'r+') as f:
-        poses = json.load(f)
-    files = [sample['original_sample'] for sample in poses]
-    files_unique = set(files)
-    return files_unique
+def processed_sequences(json_file: Path):
+    if not json_file.exists():
+        return set()
+    return {sample['original_sample'] for sample in json.loads(json_file.read_text())}
 
 
-def main(args):
+def parse_args():
+    p = argparse.ArgumentParser(description='Convert the YARP H3.6M events and ground truth to EROS frames '
+                                            'and MoveNet annotations.',
+                                formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    p.add_argument('--input_folder', type=Path, required=True,
+                   help='folder with the YARP sequences (one cam<C>_S<N>_<Action> folder each)')
+    p.add_argument('--output_folder', type=Path, required=True,
+                   help='folder where the frames and annotations are written (training/ or tester/ sub-folders)')
+    p.add_argument('--sequences', nargs='+', default=None,
+                   help='sequence folders to process (default: all the sub-folders of --input_folder)')
+    p.add_argument('--eros_kernel', default=8, type=int)
+    p.add_argument('--frame_width', default=640, type=int)
+    p.add_argument('--frame_height', default=480, type=int)
+    p.add_argument('--gauss_kernel', default=7, type=int)
+    p.add_argument('--skip_image', default=None, type=int, help='number of frames to skip between two samples')
+    p.add_argument('--from_scratch', type=str2bool, nargs='?', const=True, default=False,
+                   help='write the annotation file from scratch')
+    p.add_argument('--write_annotation', type=str2bool, nargs='?', const=True, default=False,
+                   help='write the annotation file')
+    p.add_argument('--write_images', type=str2bool, nargs='?', const=True, default=False, help='save images')
+    p.add_argument('--write_video', type=str2bool, nargs='?', const=True, default=False, help='save video')
+    p.add_argument('--fps', default=50, type=int)
+    p.add_argument('--dev', type=str2bool, nargs='?', const=True, default=False,
+                   help='dev mode: write to tester/, show the frames and stop after the first sequence')
+    p.add_argument('--ts_scaler', default=12.50, type=float)
+    p.add_argument('--upperbody', type=str2bool, nargs='?', const=True, default=False,
+                   help='create annotation for upperbody only')
+    return p.parse_args()
+
+
+def main():
+    args = parse_args()
+    if not args.input_folder.is_dir():
+        sys.exit(f"Input folder {args.input_folder} does not exist")
+
     if args.dev:
-        output_path_images = args.data_home + "/tester/h36m_EROS/"
-        output_path_anno = args.data_home + "/tester/h36m_anno/"
+        subfolder, suffix = 'tester', ''
     else:
-        output_path_images = args.data_home + "/training/h36m_EROS/"
-        output_path_anno = args.data_home + "/training/h36m_anno/"
-        if args.upperbody:
-            output_path_images = args.data_home + "/training/h36m_EROS_upper/"
-            output_path_anno = args.data_home + "/training/h36m_anno_upper/"
+        subfolder, suffix = 'training', '_upper' if args.upperbody else ''
+    output_path_images = (args.output_folder / subfolder / f'h36m_EROS{suffix}').resolve()
+    output_path_anno = (args.output_folder / subfolder / f'h36m_anno{suffix}').resolve()
+    output_json = output_path_anno / 'poses.json'
+    ensure_location(str(output_path_images))
+    ensure_location(str(output_path_anno))
 
-    output_path_images = os.path.abspath(output_path_images)
-    output_path_anno = os.path.abspath(output_path_anno)
-    output_json = output_path_anno + '/poses.json'
-    ensure_location(output_path_images)
-    ensure_location(output_path_anno)
+    if args.from_scratch:
+        output_json.unlink(missing_ok=True)
 
-    input_data_dir = args.data_home + "/yarp/"
-    input_data_dir = os.path.abspath(input_data_dir)
+    sequences = args.sequences
+    if sequences is None:
+        sequences = sorted(d.name for d in args.input_folder.iterdir() if d.is_dir())
+    if args.dev:
+        sequences = sequences[:1]
+    already_done = processed_sequences(output_json)
 
-    dir_list = os.listdir(input_data_dir)
-    already_done = setup_testing_list(output_json)
-
-    for i in tqdm(range(len(dir_list))):
-        if args.dev:
-            sample = 'cam2_S11_Directions'
-        else:
-            sample = dir_list[i]
-        cam = sample[3]
-        dvs_dir = os.path.join(input_data_dir, sample, 'ch0dvs')
-        data_vicon_file = os.path.join(input_data_dir, sample, f'ch{cam}GT50Hzskeleton/data.log')
-        process = True
-        print(str(i), "=====", sample, "=====")
+    for sample in tqdm(sequences):
+        cam = sample[3]  # sequence folders are named cam<C>_S<N>_<Action>
+        dvs_dir = args.input_folder / sample / 'ch0dvs'
+        skeleton_file = args.input_folder / sample / f'ch{cam}GT50Hzskeleton' / 'data.log'
 
         if sample in already_done:
-            print('skipping: ', sample, '(already processed)')
-            process = False
-        elif not os.path.exists(dvs_dir):
-            print('skipping: ', dvs_dir, 'does not exist')
-            process = False
-        elif not os.path.exists(data_vicon_file):
-            print('skipping: ', data_vicon_file, 'does not exist')
-            process = False
-
-        if process:
-            export_to_eros(dvs_dir, data_vicon_file, output_path_images, skip=args.skip_image, args=args,
-                           output_json=output_json)
-
-        if args.dev:
-            exit()
+            tqdm.write(f'skipping: {sample} (already processed)')
+        elif not dvs_dir.exists():
+            tqdm.write(f'skipping: {dvs_dir} does not exist')
+        elif not skeleton_file.exists():
+            tqdm.write(f'skipping: {skeleton_file} does not exist')
+        else:
+            export_to_eros(dvs_dir, skeleton_file, output_path_images, args, output_json=output_json)
 
 
 if __name__ == '__main__':
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-eros_kernel', help='', default=8, type=int)
-    parser.add_argument('-frame_width', help='', default=640, type=int)
-    parser.add_argument('-frame_height', help='', default=480, type=int)
-    parser.add_argument('-gauss_kernel', help='', default=7, type=int)
-    parser.add_argument('-skip_image', help='', default=None)
-    parser.add_argument('-data_home', help='Path to dataset folder', default='/home/ggoyal/data/h36m_cropped/',
-                        type=str)
-    parser.add_argument("-from_scratch", type=str2bool, nargs='?', const=True, default=False,
-                        help="Write annotation file from scratch.")
-    parser.add_argument("-write_annotation", type=str2bool, nargs='?', const=True, default=False,
-                        help="Write annotation file.")
-    parser.add_argument("-write_images", type=str2bool, nargs='?', const=True, default=False, help="Save images.")
-    parser.add_argument("-write_video", type=str2bool, nargs='?', const=True, default=False, help="Save video.")
-    parser.add_argument('-fps', help='', default=50, type=int)
-    parser.add_argument("-dev", type=str2bool, nargs='?', const=True, default=False, help="Run in dev mode.")
-    parser.add_argument("-ts_scaler", help='', default=12.50, type=float)
-    parser.add_argument("-upperbody", type=str2bool, nargs='?', const=True, default=False,
-                        help="Create annotation for upperbody only.")
-
-    args = parser.parse_args()
-    try:
-        args = parser.parse_args()
-    except argparse.ArgumentError:
-        print('Catching an argumentError')
-    main(args)
-
-
+    main()

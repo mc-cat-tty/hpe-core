@@ -2,54 +2,95 @@
 # -*- coding: utf-8 -*-
 """
 Copyright (C) 2021 Event-driven Perception for Robotics
-Author: Franco Di Pietro 
+Author: Franco Di Pietro
+Refactor by: @mc-cat-tty
 
 LICENSE GOES HERE
 """
 
-# %% Preliminaries
-import numpy as np
+import argparse
+import contextlib
 import os
 import sys
+from pathlib import Path
+from multiprocessing import Pool, cpu_count
+from functools import partial
+
 import h5py
+import numpy as np
+from bimvee import exportIitYarp
 from tqdm import tqdm
 
-# Load env variables set on .bashrc
-bimvee_path = os.environ.get('BIMVEE_PATH')
-# Add local paths
-sys.path.insert(0, bimvee_path)
 
-from bimvee import exportIitYarp
+def load_events(h5_file):
+    with h5py.File(h5_file, 'r') as hf:
+        return np.array(hf['events'][:])
 
 
-# Directory with 
-datadir = '/data/h36m/events_v2e/'
-outputdir = '/data/h36m/yarp/'
-# datadir = '/home/fdipietro/hpe-data/h36_server/'
-dir_list = os.listdir(datadir)
-if 'yarp' in dir_list: dir_list.remove('yarp')
-# dir_list = ['S1_Discussion_1']
+def build_container(data, export_path):
+    return {
+        'info': {'filePathOrName': str(export_path)},
+        'data': {'ch0': {'dvs': {
+            'ts': (data[:, 0] - data[0, 0]) * 1e-6,
+            'x': data[:, 1],
+            'y': data[:, 2],
+            'pol': data[:, 3].astype(bool),
+        }}},
+    }
 
-# %% Import/Export 
-for i in tqdm(range(len(dir_list))):
-    filename = datadir + dir_list[i] + '/Directions.h5'
-    print('\nProcessing '+filename)
-    hf = h5py.File(filename, 'r')
-    data = np.array(hf["events"][:]) #dataset_name is same as hdf5 object name 
-    container = {}
-    fileExport = outputdir + dir_list[i]
-    # if os.path.isdir(os.path.join(fileExport,'ch0dvs')):
-    #     continue
-    container['info'] = {}
-    container['info']['filePathOrName'] = fileExport 
-    container['data'] = {}
-    container['data']['ch0'] = {}
-    container['data']['ch0']['dvs'] = {}
-    try:
-        container['data']['ch0']['dvs']['ts'] = (data[:,0]-data[0,0])*1e-6
-    except IndexError:
-        continue
-    container['data']['ch0']['dvs']['x'] = data[:,1]
-    container['data']['ch0']['dvs']['y'] = data[:,2]
-    container['data']['ch0']['dvs']['pol'] = data[:,3].astype(bool)
-    exportIitYarp.exportIitYarp(container, exportFilePath=fileExport, protectedWrite=False)
+
+def parse_args():
+    p = argparse.ArgumentParser(description='Convert the hdf5 events produced by v2e to the YARP format.',
+                                formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    p.add_argument('--input_folder', type=Path, required=True,
+                   help='folder with one sub-folder per sequence, each containing the v2e hdf5 file')
+    p.add_argument('--output_folder', type=Path, required=True, help='folder where the YARP datasets are written')
+    p.add_argument('--h5_name', default='events.h5', help='name of the hdf5 file inside each sequence folder')
+    p.add_argument('--sequences', nargs='+', default=None,
+                   help='sequence folders to process (default: all the sub-folders of --input_folder)')
+    p.add_argument('--skip_existing', action='store_true', help='skip sequences already exported')
+    return p.parse_args()
+
+def process_sequence(args, seq: str):
+    """Export one sequence. Returns a message to report, or None on success (workers must not print)."""
+    h5_files = list((args.input_folder / seq).rglob(args.h5_name))
+    if len(h5_files) > 1:
+        return f"Skipping {seq}: too many .h5 files: {h5_files}"
+    if len(h5_files) < 1:
+        return f"Skipping {seq}: .h5 file not found"
+
+    h5_file = h5_files[0]
+    export_path = args.output_folder / seq
+    if args.skip_existing and (export_path / 'ch0dvs').is_dir():
+        return f"Skipping {seq}: already processed"
+
+    data = load_events(h5_file)
+    if data.ndim != 2 or len(data) == 0:
+        return f"Skipping {seq}: no events"
+    # exportIitYarp draws its own progress bar, which would clash with the overall one
+    with open(os.devnull, 'w') as devnull, contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+        exportIitYarp.exportIitYarp(build_container(data, export_path), exportFilePath=str(export_path),
+                                    protectedWrite=False)
+    return f"Done {seq}"
+
+
+def main():
+    args = parse_args()
+    if not args.input_folder.is_dir():
+        sys.exit(f"Input folder {args.input_folder} does not exist")
+
+    sequences = args.sequences
+    if sequences is None:
+        out_abs = args.output_folder.resolve()
+        sequences = sorted(d.name for d in args.input_folder.iterdir()
+                           if d.is_dir() and d.resolve() != out_abs)
+
+    workers = int(cpu_count()*1.5)
+    with Pool(workers) as p:
+        for msg in tqdm(p.imap(partial(process_sequence, args), sequences), total=len(sequences)):
+            if msg:
+                tqdm.write(msg)
+
+
+if __name__ == '__main__':
+    main()
