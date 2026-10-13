@@ -24,7 +24,7 @@ def export_to_eros(dvs_dir: Path, skeleton_file: Path, output_path: Path, args, 
     skip = 1 if args.skip_image is None else args.skip_image + 1
     action_name = dvs_dir.parent.name
 
-    data_vicon = import_yarp_skeleton_data(skeleton_file)
+    data_vicon = import_yarp_skeleton_data(skeleton_file, multi_channel=True)
     data_dvs = import_dvs(filePathOrName=str(dvs_dir))
     data_dvs['data']['left']['dvs']['ts'] /= args.ts_scaler
     iterator = batchIterator(data_dvs['data']['left']['dvs'], data_vicon)
@@ -62,7 +62,7 @@ def export_to_eros(dvs_dir: Path, skeleton_file: Path, output_path: Path, args, 
         frame = cv2.GaussianBlur(frame, (args.gauss_kernel, args.gauss_kernel), 0)
         if args.write_images:
             cv2.imwrite(str(output_path / sample_anno['img_name']), frame)
-        if args.dev:
+        if args.show:
             keypoints = np.reshape(sample_anno['keypoints'], [-1, 3])
             h, w = frame.shape
             for keypoint in keypoints:
@@ -116,7 +116,9 @@ def parse_args():
     p.add_argument('--write_video', type=str2bool, nargs='?', const=True, default=False, help='save video')
     p.add_argument('--fps', default=50, type=int)
     p.add_argument('--dev', type=str2bool, nargs='?', const=True, default=False,
-                   help='dev mode: write to tester/, show the frames and stop after the first sequence')
+                   help='dev mode: write to tester/ and stop after the first sequence')
+    p.add_argument('--show', action='store_true',
+                   help='display the frames with the keypoints (needs a graphical display)')
     p.add_argument('--ts_scaler', default=12.50, type=float)
     p.add_argument('--upperbody', type=str2bool, nargs='?', const=True, default=False,
                    help='create annotation for upperbody only')
@@ -151,7 +153,7 @@ def main():
     for sample in tqdm(sequences):
         cam = sample[3]  # sequence folders are named cam<C>_S<N>_<Action>
         dvs_dir = args.input_folder / sample / 'ch0dvs'
-        skeleton_file = args.input_folder / sample / f'ch{cam}GT50Hzskeleton' / 'data.log'
+        skeleton_file = args.input_folder / sample / f'ch0GT50Hzskeleton' / 'data.log'
 
         if sample in already_done:
             tqdm.write(f'skipping: {sample} (already processed)')
