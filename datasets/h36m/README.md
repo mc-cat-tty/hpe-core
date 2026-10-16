@@ -1,4 +1,4 @@
-# Event-Human 3.6 million (quick way)
+# Event-Human 3.6 million (quick and suggested way)
 [Event-Human 3.6m million](https://zenodo.org/records/7842598) is a dataset containing a conversion of Human 3.6m dataset RGB videos to event streams.
 
 ### Usage

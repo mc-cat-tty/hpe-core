@@ -10,17 +10,47 @@ import json
 import sys
 from pathlib import Path
 
-import cv2
+import cv2, os, contextlib, threading
 import numpy as np
 from tqdm import tqdm
+from multiprocessing import Manager, Pool, cpu_count
+from functools import partial
 
 from datasets.utils.parsing import import_yarp_skeleton_data, batchIterator
 from datasets.utils.events_representation import EROS
 from datasets.utils.export import ensure_location, str2bool, get_movenet_keypoints, get_center, get_torso_length
 from bimvee.importIitYarp import importIitYarp as import_dvs
+import bimvee.importIitYarp as iit_yarp
+
+### Some facility objects and functions to collect output from parallel processes and write it to stdout from the main process ###
+_log_queue = None
+
+def _drain_logs(queue):
+    while (line := queue.get()) is not None:
+        tqdm.write(line)
+
+class QueueWriter:
+    """File-like stdout/stderr replacement that forwards each complete line to the parent process."""
+
+    def __init__(self, queue):
+        self.queue = queue
+        self.pending = ''
+
+    def write(self, text):
+        self.pending += text
+        *lines, self.pending = self.pending.split('\n')
+        for line in lines:
+            self.queue.put(line)
+        return len(text)
+
+    def flush(self):
+        if self.pending:
+            self.queue.put(self.pending)
+            self.pending = ''
+### End of output collection facility ###
 
 
-def export_to_eros(dvs_dir: Path, skeleton_file: Path, output_path: Path, args, output_json: Path = None):
+def export_to_eros(dvs_dir: Path, skeleton_file: Path, output_path: Path, args):
     skip = 1 if args.skip_image is None else args.skip_image + 1
     action_name = dvs_dir.parent.name
 
@@ -36,8 +66,6 @@ def export_to_eros(dvs_dir: Path, skeleton_file: Path, output_path: Path, args, 
                                     args.fps, (args.frame_width, args.frame_height))
 
     for fi, (events, pose, batch_size) in enumerate(iterator):
-        if args.dev:
-            tqdm.write(f'frame: {fi}')
         for ei in range(batch_size):
             eros.update(vx=int(events['x'][ei]), vy=int(events['y'][ei]))
 
@@ -80,6 +108,9 @@ def export_to_eros(dvs_dir: Path, skeleton_file: Path, output_path: Path, args, 
     if args.write_video:
         video_out.release()
 
+    return poses_movenet
+
+def append_gt_poses(args, output_json, poses_movenet):
     # Writing the GT, appending to the previous annotations if any
     if args.write_annotation and output_json is not None:
         poses = json.loads(output_json.read_text()) if output_json.exists() else []
@@ -91,6 +122,37 @@ def processed_sequences(json_file: Path):
     if not json_file.exists():
         return set()
     return {sample['original_sample'] for sample in json.loads(json_file.read_text())}
+
+
+def convert_seq_to_eros(args, already_done, output_path_images, sample):
+    writer = QueueWriter(_log_queue)
+    with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
+        poses, msg = _convert_seq_to_eros(args, already_done, output_path_images, sample)
+    writer.flush()
+    return poses, msg
+
+
+def _convert_seq_to_eros(args, already_done, output_path_images, sample):
+    cam = sample[3]  # sequence folders are named cam<C>_S<N>_<Action>
+    dvs_dir = args.input_folder / sample / 'ch0dvs'
+    skeleton_file = args.input_folder / sample / f'ch0GT50Hzskeleton' / 'data.log'
+
+    if sample in already_done:
+        return f'Skipping: {sample} (already processed)'
+    
+    if not dvs_dir.exists():
+        return f'Skipping: {dvs_dir} does not exist'
+    
+    if not skeleton_file.exists():
+        return f'Skipping: {skeleton_file} does not exist'
+
+    poses = export_to_eros(dvs_dir, skeleton_file, output_path_images, args)
+    return poses, f"Done {sample}"
+
+def init_convert_seq_to_ros(queue):
+    global _log_queue
+    _log_queue = queue
+    iit_yarp.tqdm = partial(tqdm, disable=True)
 
 
 def parse_args():
@@ -134,6 +196,7 @@ def main():
         subfolder, suffix = 'tester', ''
     else:
         subfolder, suffix = 'training', '_upper' if args.upperbody else ''
+    
     output_path_images = (args.output_folder / subfolder / f'h36m_EROS{suffix}').resolve()
     output_path_anno = (args.output_folder / subfolder / f'h36m_anno{suffix}').resolve()
     output_json = output_path_anno / 'poses.json'
@@ -150,19 +213,18 @@ def main():
         sequences = sequences[:1]
     already_done = processed_sequences(output_json)
 
-    for sample in tqdm(sequences):
-        cam = sample[3]  # sequence folders are named cam<C>_S<N>_<Action>
-        dvs_dir = args.input_folder / sample / 'ch0dvs'
-        skeleton_file = args.input_folder / sample / f'ch0GT50Hzskeleton' / 'data.log'
-
-        if sample in already_done:
-            tqdm.write(f'skipping: {sample} (already processed)')
-        elif not dvs_dir.exists():
-            tqdm.write(f'skipping: {dvs_dir} does not exist')
-        elif not skeleton_file.exists():
-            tqdm.write(f'skipping: {skeleton_file} does not exist')
-        else:
-            export_to_eros(dvs_dir, skeleton_file, output_path_images, args, output_json=output_json)
+    workers = int(cpu_count()*1.5)
+    with Manager() as manager:
+        log_queue = manager.Queue()
+        log_reader = threading.Thread(target=_drain_logs, args=(log_queue,), daemon=True)
+        log_reader.start()
+        with Pool(workers, initializer=init_convert_seq_to_ros, initargs=(log_queue,)) as p:
+            for poses, msg in tqdm(p.imap_unordered(partial(convert_seq_to_eros, args, already_done, output_path_images), sequences), total=len(sequences), unit='sequence'):
+                if poses: append_gt_poses(args, output_json, poses)
+                if msg: tqdm.write(msg)
+        log_queue.put(None)
+        log_reader.join()
+    
 
 
 if __name__ == '__main__':

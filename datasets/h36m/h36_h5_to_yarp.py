@@ -87,7 +87,7 @@ def main():
 
     workers = int(cpu_count()*1.5)
     with Pool(workers) as p:
-        for msg in tqdm(p.imap(partial(process_sequence, args), sequences), total=len(sequences)):
+        for msg in tqdm(p.imap_unordered(partial(process_sequence, args), sequences), total=len(sequences), unit='sequence'):
             if msg:
                 tqdm.write(msg)
 
