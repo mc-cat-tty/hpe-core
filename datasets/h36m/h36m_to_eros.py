@@ -181,7 +181,7 @@ def parse_args():
                    help='dev mode: write to tester/ and stop after the first sequence')
     p.add_argument('--show', action='store_true',
                    help='display the frames with the keypoints (needs a graphical display)')
-    p.add_argument('--ts_scaler', default=12.50, type=float)
+    p.add_argument('--ts_scaler', default=1.0, type=float)
     p.add_argument('--upperbody', type=str2bool, nargs='?', const=True, default=False,
                    help='create annotation for upperbody only')
     return p.parse_args()

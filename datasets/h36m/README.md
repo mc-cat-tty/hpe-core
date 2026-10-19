@@ -5,7 +5,7 @@
 - Install dependencies by running `pip install -r datasets/h36m/requirements.txt`, possibly in a virtual environment.
 - Download the dataset by running `bash datasets/h36m/download_eh36m.sh <EH36M-FOLDER>`
 - Run `python -m datasets.h36m.h36_h5_to_yarp --input_folder <EH36M-FOLDER> --output_folder <EH36M-FOLDER> --h5_name data.h5` to convert the output of `v2e` to the YARP format.
-- Run `python -m datasets.h36m.h36m_to_eros --input_folder <EH36M-FOLDER> --output_folder <EH36M-FOLDER> --write_images --write_annotation --from_scratch` to convert the events contained in h5 file to the EROS representation.
+- Run `python -m datasets.h36m.h36m_to_eros --input_folder <EH36M-FOLDER> --output_folder <EH36M-FOLDER> --write_images --write_annotation --from_scratch --ts_scaler 1 --gauss_kernel 3` to convert the events contained in h5 file to the EROS representation.
 
 # Original Human 3.6 million to events
 
