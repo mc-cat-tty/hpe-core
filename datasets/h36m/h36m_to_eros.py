@@ -214,6 +214,8 @@ def main():
     already_done = processed_sequences(output_json)
 
     workers = int(cpu_count()*1.5)
+    workers = min(workers, len(sequences))
+    print(f"Spawning {workers} workers...")
     with Manager() as manager:
         log_queue = manager.Queue()
         log_reader = threading.Thread(target=_drain_logs, args=(log_queue,), daemon=True)

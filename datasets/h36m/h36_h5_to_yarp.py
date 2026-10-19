@@ -86,6 +86,8 @@ def main():
                            if d.is_dir() and d.resolve() != out_abs)
 
     workers = int(cpu_count()*1.5)
+    workers = min(workers, len(sequences))
+    print(f"Spawning {workers} workers...")
     with Pool(workers) as p:
         for msg in tqdm(p.imap_unordered(partial(process_sequence, args), sequences), total=len(sequences), unit='sequence'):
             if msg:
