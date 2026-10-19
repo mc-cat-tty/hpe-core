@@ -9,6 +9,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Optional
 
 import cv2, os, contextlib, threading
 import numpy as np
@@ -50,7 +51,29 @@ class QueueWriter:
 ### End of output collection facility ###
 
 
-def export_to_eros(dvs_dir: Path, skeleton_file: Path, output_path: Path, args):
+# Bones between the MoveNet keypoints: head, l/r shoulder, l/r elbow, l/r wrist, l/r hip, l/r knee, l/r ankle
+MOVENET_BONES = [(0, 1), (0, 2), (1, 2), (1, 3), (3, 5), (2, 4), (4, 6), (1, 7), (2, 8), (7, 8),
+                 (7, 9), (9, 11), (8, 10), (10, 12)]
+
+
+def draw_skeleton(frame, keypoints):
+    """Return a BGR copy of the grayscale frame with the normalized MoveNet keypoints and their bones drawn on it."""
+    img = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+    h, w = frame.shape
+    kps = np.reshape(keypoints, [-1, 3])
+    # Points with placeholder or non-finite values (e.g. missing GT) are not drawn
+    valid = [bool(np.all(np.isfinite(k[:2])) and np.all(np.abs(k[:2]) < 10)) for k in kps]
+    pts = [(int(round(k[0] * w)), int(round(k[1] * h))) if v else None for k, v in zip(kps, valid)]
+    for a, b in MOVENET_BONES:
+        if a < len(pts) and b < len(pts) and pts[a] is not None and pts[b] is not None:
+            cv2.line(img, pts[a], pts[b], (0, 255, 0), 1, cv2.LINE_AA)
+    for p in pts:
+        if p is not None:
+            cv2.circle(img, p, 3, (0, 0, 255), -1, cv2.LINE_AA)
+    return img
+
+
+def export_to_eros(dvs_dir: Path, skeleton_file: Path, output_path: Path, inspect_path: Optional[Path], args):
     skip = 1 if args.skip_image is None else args.skip_image + 1
     action_name = dvs_dir.parent.name
 
@@ -90,6 +113,8 @@ def export_to_eros(dvs_dir: Path, skeleton_file: Path, output_path: Path, args):
         frame = cv2.GaussianBlur(frame, (args.gauss_kernel, args.gauss_kernel), 0)
         if args.write_images:
             cv2.imwrite(str(output_path / sample_anno['img_name']), frame)
+        if inspect_path is not None and len(poses_movenet) % args.inspect_every == 0:
+            cv2.imwrite(str(inspect_path / sample_anno['img_name']), draw_skeleton(frame, sample_anno['keypoints']))
         if args.show:
             keypoints = np.reshape(sample_anno['keypoints'], [-1, 3])
             h, w = frame.shape
@@ -124,15 +149,15 @@ def processed_sequences(json_file: Path):
     return {sample['original_sample'] for sample in json.loads(json_file.read_text())}
 
 
-def convert_seq_to_eros(args, already_done, output_path_images, sample):
+def convert_seq_to_eros(args, already_done, output_path_images, output_path_inspect, sample):
     writer = QueueWriter(_log_queue)
     with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
-        poses, msg = _convert_seq_to_eros(args, already_done, output_path_images, sample)
+        poses, msg = _convert_seq_to_eros(args, already_done, output_path_images, output_path_inspect, sample)
     writer.flush()
     return poses, msg
 
 
-def _convert_seq_to_eros(args, already_done, output_path_images, sample):
+def _convert_seq_to_eros(args, already_done, output_path_images, output_path_inspect, sample):
     cam = sample[3]  # sequence folders are named cam<C>_S<N>_<Action>
     dvs_dir = args.input_folder / sample / 'ch0dvs'
     skeleton_file = args.input_folder / sample / f'ch0GT50Hzskeleton' / 'data.log'
@@ -146,7 +171,7 @@ def _convert_seq_to_eros(args, already_done, output_path_images, sample):
     if not skeleton_file.exists():
         return f'Skipping: {skeleton_file} does not exist'
 
-    poses = export_to_eros(dvs_dir, skeleton_file, output_path_images, args)
+    poses = export_to_eros(dvs_dir, skeleton_file, output_path_images, output_path_inspect, args)
     return poses, f"Done {sample}"
 
 def init_convert_seq_to_ros(queue):
@@ -170,6 +195,11 @@ def parse_args():
     p.add_argument('--frame_height', default=480, type=int)
     p.add_argument('--gauss_kernel', default=7, type=int)
     p.add_argument('--skip_image', default=None, type=int, help='number of frames to skip between two samples')
+    p.add_argument('--skip_sequences', nargs='+', default=[],
+                   help='sequence folders to leave out')
+    p.add_argument('--inspect_every', default=None, type=int,
+                   help='save one exported frame every N, with the GT skeleton superimposed, in a dedicated '
+                        'folder (h36m_EROS_inspect) for visual inspection')
     p.add_argument('--from_scratch', type=str2bool, nargs='?', const=True, default=False,
                    help='write the annotation file from scratch')
     p.add_argument('--write_annotation', type=str2bool, nargs='?', const=True, default=False,
@@ -203,16 +233,30 @@ def main():
     ensure_location(str(output_path_images))
     ensure_location(str(output_path_anno))
 
+    output_path_inspect = None
+    if args.inspect_every:
+        if args.inspect_every < 1:
+            sys.exit('--inspect_every must be a positive integer')
+        output_path_inspect = (args.output_folder / subfolder / f'h36m_EROS_inspect{suffix}').resolve()
+        ensure_location(str(output_path_inspect))
+
     if args.from_scratch:
         output_json.unlink(missing_ok=True)
 
     sequences = args.sequences
     if sequences is None:
         sequences = sorted(d.name for d in args.input_folder.iterdir() if d.is_dir())
+    unknown = set(args.skip_sequences) - set(sequences)
+    if unknown:
+        print(f"Warning: --skip_sequences names not among the sequences to process: {sorted(unknown)}")
+    sequences = [s for s in sequences if s not in set(args.skip_sequences)]
     if args.dev:
         sequences = sequences[:1]
+    if not sequences:
+        sys.exit('No sequence left to process')
     already_done = processed_sequences(output_json)
 
+    # The sequences list is final here: the number of workers depends on it
     workers = int(cpu_count()*1.5)
     workers = min(workers, len(sequences))
     print(f"Spawning {workers} workers...")
@@ -221,7 +265,7 @@ def main():
         log_reader = threading.Thread(target=_drain_logs, args=(log_queue,), daemon=True)
         log_reader.start()
         with Pool(workers, initializer=init_convert_seq_to_ros, initargs=(log_queue,)) as p:
-            for poses, msg in tqdm(p.imap_unordered(partial(convert_seq_to_eros, args, already_done, output_path_images), sequences), total=len(sequences), unit='sequence'):
+            for poses, msg in tqdm(p.imap_unordered(partial(convert_seq_to_eros, args, already_done, output_path_images, output_path_inspect), sequences), total=len(sequences), unit='sequence'):
                 if poses: append_gt_poses(args, output_json, poses)
                 if msg: tqdm.write(msg)
         log_queue.put(None)
