@@ -163,13 +163,13 @@ def _convert_seq_to_eros(args, already_done, output_path_images, output_path_ins
     skeleton_file = args.input_folder / sample / f'ch0GT50Hzskeleton' / 'data.log'
 
     if sample in already_done:
-        return f'Skipping: {sample} (already processed)'
+        return None, f'Skipping: {sample} (already processed)'
     
     if not dvs_dir.exists():
-        return f'Skipping: {dvs_dir} does not exist'
+        return None, f'Skipping: {dvs_dir} does not exist'
     
     if not skeleton_file.exists():
-        return f'Skipping: {skeleton_file} does not exist'
+        return None, f'Skipping: {skeleton_file} does not exist'
 
     poses = export_to_eros(dvs_dir, skeleton_file, output_path_images, output_path_inspect, args)
     return poses, f"Done {sample}"
