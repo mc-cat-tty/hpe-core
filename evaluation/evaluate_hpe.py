@@ -209,7 +209,8 @@ def plot_boxplot(algo_metrics: dict, descr: Optional[str], file_path: Path) -> N
     plt.savefig(str(file_path.resolve()))
 
 
-def plot_predictions(output_folder_path, ds_name, timestamps, joints_gt, algo_names, joints_predicted):
+def plot_predictions(output_folder_path, ds_name, timestamps, joints_gt, algo_names, timestamps_predicted,
+                     joints_predicted):
     assert 1 <= joints_gt.shape[2] <= 3, 'coordinates must be either 2D or 3D'
 
     # define a color for each algorithm and each coordinate
@@ -250,7 +251,7 @@ def plot_predictions(output_folder_path, ds_name, timestamps, joints_gt, algo_na
             for pi, predictions_algo in enumerate(joints_predicted):
                 # plot predictions
                 coord_pred = predictions_algo[:, joint_ind, coord_ind]
-                ax.plot(timestamps, coord_pred, color=algo_colors[pi][coord_ind], marker=".",
+                ax.plot(timestamps_predicted[pi], coord_pred, color=algo_colors[pi][coord_ind], marker=".",
                         label=f'{algo_names[pi][:]} {lbl_coord}', linestyle='-', alpha=1.0, markersize=12)
                 y_lim_min = min(y_lim_min, min(coord_pred))
                 y_lim_max = max(y_lim_max, max(coord_pred))
@@ -271,7 +272,8 @@ def plot_predictions(output_folder_path, ds_name, timestamps, joints_gt, algo_na
             # plt.savefig(str(fig_path.resolve()))
 
 
-def plot_predictions_all_joints(output_folder_path, ds_name, timestamps, joints_gt, algo_names, joints_predicted):
+def plot_predictions_all_joints(output_folder_path, ds_name, timestamps, joints_gt, algo_names, timestamps_predicted,
+                                joints_predicted):
     assert 1 <= joints_gt.shape[2] <= 3, 'coordinates must be either 2D or 3D'
 
     for pi, predictions_algo in enumerate(joints_predicted):
@@ -313,14 +315,14 @@ def plot_predictions_all_joints(output_folder_path, ds_name, timestamps, joints_
                 coord_pred = predictions_algo[:, joint_ind, coord_ind]
                 if (coord_ind == 0):  # x component
                     if (joint_ind == 0):
-                        ax.plot(timestamps, coord_pred, color='tab:blue', marker=".", linestyle='-', alpha=1.0,
+                        ax.plot(timestamps_predicted[pi], coord_pred, color='tab:blue', marker=".", linestyle='-', alpha=1.0,
                                 label=f'Tracked {lbl_coord}')
-                    ax.plot(timestamps, coord_pred, color='tab:blue', marker=".", linestyle='-', alpha=1.0)
+                    ax.plot(timestamps_predicted[pi], coord_pred, color='tab:blue', marker=".", linestyle='-', alpha=1.0)
                 if (coord_ind == 1):  # y component
                     if (joint_ind == 0):
-                        ax.plot(timestamps, coord_pred, color='tab:orange', marker=".", linestyle='-', alpha=1.0,
+                        ax.plot(timestamps_predicted[pi], coord_pred, color='tab:orange', marker=".", linestyle='-', alpha=1.0,
                                 label=f'Tracked {lbl_coord}')
-                    ax.plot(timestamps, coord_pred, color='tab:orange', marker=".", linestyle='-', alpha=1.0)
+                    ax.plot(timestamps_predicted[pi], coord_pred, color='tab:orange', marker=".", linestyle='-', alpha=1.0)
 
                 y_lim_min = min(y_lim_min, min(coord_pred))
                 y_lim_max = max(y_lim_max, max(coord_pred))
@@ -609,9 +611,17 @@ def main(args):
 
         results['datasets'][results_key] = dict()
 
+        # GT samples within the window used to filter the predictions; the GT is never interpolated
+        t_window = data['ts'][np.logical_and(data['ts'] > 0.1 * ts_gt[-1], data['ts'] < ts_gt[-1])]
+        skeletons_gt_window = np.zeros((len(t_window), len(ds_constants.HPECoreSkeleton.KEYPOINTS_MAP), 2))
+        for k_map in ds_constants.HPECoreSkeleton.KEYPOINTS_MAP.items():
+            skeletons_gt_window[:, k_map[1], 0] = data[k_map[0]]['x'](t_window)
+            skeletons_gt_window[:, k_map[1], 1] = data[k_map[0]]['y'](t_window)
+
         algorithm_names = []
         skeletons_predictions = []
         skeletons_predictions_eval = []
+        timestamps_eval = []
         timestamps = []
         latency = []
 
@@ -648,16 +658,17 @@ def main(args):
                 print(f"Looks like prediction file {pred_path} is mostly empty.")
                 continue
 
-            # evaluate at the GT timestamps (same window used to filter the predictions), so that all algorithms
-            # are compared on the same samples and the GT is never interpolated
-            t_eval = data['ts'][np.logical_and(data['ts'] > 0.1 * ts_gt[-1], data['ts'] < ts_gt[-1])]
-            skeletons_gt_eval = np.zeros((len(t_eval), len(ds_constants.HPECoreSkeleton.KEYPOINTS_MAP), 2))
-            for k_map in ds_constants.HPECoreSkeleton.KEYPOINTS_MAP.items():
-                skeletons_gt_eval[:, k_map[1], 0] = data[k_map[0]]['x'](t_eval)
-                skeletons_gt_eval[:, k_map[1], 1] = data[k_map[0]]['y'](t_eval)
-            # zero-order hold: take the latest prediction available at each GT timestamp (no look-ahead);
-            # GT samples preceding the first prediction use the first prediction
-            pred_idx = np.maximum(np.searchsorted(ts_pred, t_eval, side='right') - 1, 0)
+            # evaluate only at the GT timestamps covered by the predictions, so that the first/last prediction is
+            # never held frozen before the algorithm starts or after it stops
+            in_pred_span = np.logical_and(t_window >= ts_pred[0], t_window <= ts_pred[-1])
+            t_eval = t_window[in_pred_span]
+            skeletons_gt_eval = skeletons_gt_window[in_pred_span]
+            if len(t_eval) == 0:
+                print(f"No GT samples within the time span of predictions {pred_path}, skipping.")
+                timestamps.pop()
+                continue
+            # zero-order hold: take the latest prediction available at each GT timestamp (no look-ahead)
+            pred_idx = np.searchsorted(ts_pred, t_eval, side='right') - 1
             pred_eval = predictions[pred_idx, :].copy()
             pred_eval[:, 0] = t_eval
 
@@ -679,6 +690,7 @@ def main(args):
             algorithm_names.append(algo_name)
             skeletons_predictions.append(skeletons_pred)
             skeletons_predictions_eval.append(skeletons_pred_eval)
+            timestamps_eval.append(t_eval)
 
             # for i in range(len(skeletons_pred)):
             #     plot_poses(np.zeros((400,400,3)),(skeletons_pred[i,:,:].squeeze().astype(int)),(skeletons_gt[i,:,:].squeeze().astype(int)))
@@ -769,11 +781,11 @@ def main(args):
 
 
         if (args.plot_traj):
-            plot_predictions(output_ds_folder_path, results_key, t_eval, skeletons_gt_eval, algorithm_names,
-                             skeletons_predictions_eval)
+            plot_predictions(output_ds_folder_path, results_key, t_window, skeletons_gt_window, algorithm_names,
+                             timestamps_eval, skeletons_predictions_eval)
         if (args.plot_sklt):
-            plot_predictions_all_joints(output_ds_folder_path, results_key, t_eval, skeletons_gt_eval, algorithm_names,
-                                        skeletons_predictions_eval)
+            plot_predictions_all_joints(output_ds_folder_path, results_key, t_window, skeletons_gt_window,
+                                        algorithm_names, timestamps_eval, skeletons_predictions_eval)
         if (args.lat):
             plot_latency(output_ds_folder_path, results_key, timestamps, algorithm_names, latency)
 
