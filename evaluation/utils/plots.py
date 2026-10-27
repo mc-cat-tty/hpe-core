@@ -20,7 +20,8 @@ ALGO_COLORS = {
     'movenet_rgb':(37.0/255,52.0/255,148.0/255)
 }
 
-OTHER_COLORS = ['black', 'violet','grey']
+OTHER_COLORS = ['black', 'violet', 'grey', 'tab:olive', 'tab:cyan', 'tab:brown', 'tab:orange', 'tab:green',
+                'tab:red']
 
 RENAMING = {'movenet_cam-24': 'moveEnet',
             'movenet_eF': 'movenet_fixedCount',

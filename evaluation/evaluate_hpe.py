@@ -91,7 +91,8 @@ def plot_pck_over_thresholds(pck_thresholds_results, output_folder_path, ds_name
     # group results by algorithm
     algos = dict()
     colors = dict()
-    extra_colors = plots_utils.OTHER_COLORS
+    # copy, so that popping colors does not consume the module-level list across calls
+    extra_colors = list(plots_utils.OTHER_COLORS)
     for th in thresholds:
 
         algo_metrics = pck_thresholds_results[th]
@@ -110,6 +111,8 @@ def plot_pck_over_thresholds(pck_thresholds_results, output_folder_path, ds_name
         try:
             colors[algo_name] = plots_utils.ALGO_COLORS[algo_name]
         except KeyError:
+            if not extra_colors:
+                extra_colors = list(plots_utils.OTHER_COLORS)
             colors[algo_name] = extra_colors.pop()
 
 
@@ -608,7 +611,7 @@ def main(args):
 
         algorithm_names = []
         skeletons_predictions = []
-        skeletons_predictions1K = []
+        skeletons_predictions_eval = []
         timestamps = []
         latency = []
 
@@ -632,11 +635,10 @@ def main(args):
             predictions = predictions_old[idx[0], :]
             # ts_pred = predictions[idx[0], 0]
             ts_pred = predictions[:, 0]
+            if len(ts_pred) == 0:
+                print(f"Looks like prediction file {pred_path} is mostly empty.")
+                continue
             timestamps.append(ts_pred)
-            skeletons_gt = np.zeros((len(ts_pred), len(ds_constants.HPECoreSkeleton.KEYPOINTS_MAP), 2))
-            for k_map in ds_constants.HPECoreSkeleton.KEYPOINTS_MAP.items():
-                skeletons_gt[:, k_map[1], 0] = data[k_map[0]]['x'](ts_pred)
-                skeletons_gt[:, k_map[1], 1] = data[k_map[0]]['y'](ts_pred)
             try:
                 skeletons_pred = predictions[:, 2:].reshape(len(predictions),
                                                         len(ds_constants.HPECoreSkeleton.KEYPOINTS_MAP), -1)
@@ -646,18 +648,18 @@ def main(args):
                 print(f"Looks like prediction file {pred_path} is mostly empty.")
                 continue
 
-            # resample GT at 1 KHz for rmse
-            fHz = args.frequency
-            tGT1K = np.arange(ts_gt[0], ts_gt[-1], 1 / fHz)
-            skeletons_gt1K = np.zeros((len(tGT1K), len(ds_constants.HPECoreSkeleton.KEYPOINTS_MAP), 2))
+            # evaluate at the GT timestamps (same window used to filter the predictions), so that all algorithms
+            # are compared on the same samples and the GT is never interpolated
+            t_eval = data['ts'][np.logical_and(data['ts'] > 0.1 * ts_gt[-1], data['ts'] < ts_gt[-1])]
+            skeletons_gt_eval = np.zeros((len(t_eval), len(ds_constants.HPECoreSkeleton.KEYPOINTS_MAP), 2))
             for k_map in ds_constants.HPECoreSkeleton.KEYPOINTS_MAP.items():
-                skeletons_gt1K[:, k_map[1], 0] = data[k_map[0]]['x'](tGT1K)
-                skeletons_gt1K[:, k_map[1], 1] = data[k_map[0]]['y'](tGT1K)
-            pred1K = np.zeros([len(tGT1K), 28])
-            pred1K[:, 0] = tGT1K
-            for i in range(1, 28):
-                interp = np.interp(tGT1K, ts_pred, predictions[:, i])
-                pred1K[:, i] = interp
+                skeletons_gt_eval[:, k_map[1], 0] = data[k_map[0]]['x'](t_eval)
+                skeletons_gt_eval[:, k_map[1], 1] = data[k_map[0]]['y'](t_eval)
+            # zero-order hold: take the latest prediction available at each GT timestamp (no look-ahead);
+            # GT samples preceding the first prediction use the first prediction
+            pred_idx = np.maximum(np.searchsorted(ts_pred, t_eval, side='right') - 1, 0)
+            pred_eval = predictions[pred_idx, :].copy()
+            pred_eval[:, 0] = t_eval
 
             # predictions
             skeletons_pred = predictions[:, 2:].reshape(len(predictions),
@@ -665,18 +667,18 @@ def main(args):
             
             if algo_name == 'movenet' or algo_name == 'gl-hpe':
                 skeletons_pred = skeletons_pred[:,:,1::-1]
-            skeletons_pred1K = pred1K[:, 2:].reshape(len(pred1K), len(ds_constants.HPECoreSkeleton.KEYPOINTS_MAP), -1)
+            skeletons_pred_eval = pred_eval[:, 2:].reshape(len(pred_eval), len(ds_constants.HPECoreSkeleton.KEYPOINTS_MAP), -1)
             if algo_name == 'movenet' or algo_name == 'gl-hpe':
-                skeletons_pred1K = skeletons_pred1K[:,:,1::-1]
+                skeletons_pred_eval = skeletons_pred_eval[:,:,1::-1]
 
             if args.multi_channel: ############################################ This is only done in case of DHP19
                 # todo: Figure out the source of this error.
                 skeletons_pred[:, :, [1, 0]] = skeletons_pred[:, :, [0, 1]]
-                skeletons_pred1K[:, :, [1, 0]] = skeletons_pred1K[:, :, [0, 1]]
+                skeletons_pred_eval[:, :, [1, 0]] = skeletons_pred_eval[:, :, [0, 1]]
 
             algorithm_names.append(algo_name)
             skeletons_predictions.append(skeletons_pred)
-            skeletons_predictions1K.append(skeletons_pred1K)
+            skeletons_predictions_eval.append(skeletons_pred_eval)
 
             # for i in range(len(skeletons_pred)):
             #     plot_poses(np.zeros((400,400,3)),(skeletons_pred[i,:,:].squeeze().astype(int)),(skeletons_gt[i,:,:].squeeze().astype(int)))
@@ -690,8 +692,7 @@ def main(args):
 
                     # update dataset metric
                     pck = metrics_utils.PCK(threshold=th)
-                    # pck.update_samples(skeletons_pred, skeletons_gt, pck_sizes_gt_interp(ts_pred))
-                    pck.update_samples(skeletons_pred1K, skeletons_gt1K, pck_sizes_gt_interp(tGT1K))
+                    pck.update_samples(skeletons_pred_eval, skeletons_gt_eval, pck_sizes_gt_interp(t_eval))
 
                     if th not in results['datasets'][results_key]['pck'].keys():
                         results['datasets'][results_key]['pck'][th] = dict()
@@ -709,7 +710,7 @@ def main(args):
                         results['global']['pck'][th][algo_name] = metrics_utils.PCK(threshold=th)
 
                     pck = results['global']['pck'][th][algo_name]
-                    pck.update_samples(skeletons_pred, skeletons_gt, pck_sizes_gt_interp(ts_pred))
+                    pck.update_samples(skeletons_pred_eval, skeletons_gt_eval, pck_sizes_gt_interp(t_eval))
 
             # compute RMSE
             if args.rmse:
@@ -718,7 +719,7 @@ def main(args):
                     results['datasets'][results_key]['rmse'] = dict()
 
                 rmse = metrics_utils.RMSE()
-                rmse.update_samples(skeletons_pred1K, skeletons_gt1K)
+                rmse.update_samples(skeletons_pred_eval, skeletons_gt_eval)
 
                 algo_name = pred_path.stem
                 results['datasets'][results_key]['rmse'][algo_name] = rmse
@@ -731,7 +732,7 @@ def main(args):
                     results['global']['rmse'][algo_name] = metrics_utils.RMSE()
 
                 rmse = results['global']['rmse'][algo_name]
-                rmse.update_samples(skeletons_pred1K, skeletons_gt1K)
+                rmse.update_samples(skeletons_pred_eval, skeletons_gt_eval)
 
             # compute latency
             if args.lat:
@@ -751,7 +752,7 @@ def main(args):
                     results['datasets'][results_key]['mpjpe'] = dict()
 
                 mpjpe = metrics_utils.MPJPE()
-                mpjpe.update_samples(skeletons_pred1K, skeletons_gt1K)
+                mpjpe.update_samples(skeletons_pred_eval, skeletons_gt_eval)
 
                 algo_name = pred_path.stem
                 results['datasets'][results_key]['mpjpe'][algo_name] = mpjpe
@@ -764,15 +765,15 @@ def main(args):
                     results['global']['mpjpe'][algo_name] = metrics_utils.MPJPE() #update MPJPE metric
 
                 mpjpe = results['global']['mpjpe'][algo_name]
-                mpjpe.update_samples(skeletons_pred1K, skeletons_gt1K)
+                mpjpe.update_samples(skeletons_pred_eval, skeletons_gt_eval)
 
 
         if (args.plot_traj):
-            plot_predictions(output_ds_folder_path, results_key, tGT1K, skeletons_gt1K, algorithm_names,
-                             skeletons_predictions1K)
+            plot_predictions(output_ds_folder_path, results_key, t_eval, skeletons_gt_eval, algorithm_names,
+                             skeletons_predictions_eval)
         if (args.plot_sklt):
-            plot_predictions_all_joints(output_ds_folder_path, results_key, tGT1K, skeletons_gt1K, algorithm_names,
-                                        skeletons_predictions1K)
+            plot_predictions_all_joints(output_ds_folder_path, results_key, t_eval, skeletons_gt_eval, algorithm_names,
+                                        skeletons_predictions_eval)
         if (args.lat):
             plot_latency(output_ds_folder_path, results_key, timestamps, algorithm_names, latency)
 
@@ -932,7 +933,6 @@ if __name__ == '__main__':
                         required=True)
     parser.add_argument('-pck', help='List of thresholds for computing metric PCK; specifies that PCK must be computed',
                         type=float, nargs='+', default=[])
-    parser.add_argument('-f', '--frequency', help='Evaluation frequency',type=int,default=1000)
     parser.add_argument('-rmse', help='flag specifying that the metric RMSE must be computed', dest='rmse',
                         action='store_true')
     parser.set_defaults(rmse=False)
