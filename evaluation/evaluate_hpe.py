@@ -2,8 +2,10 @@ import argparse
 import io
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import re
 import os
+import seaborn as sns
 import math
 from tqdm import tqdm
 
@@ -88,37 +90,38 @@ from evaluation.utils.plots import plot_poses
 #                 ax.legend(fontsize=16, loc='upper right')
 
 
-def plot_pck_over_thresholds(pck_thresholds_results, output_folder_path, ds_name=None):
+def plot_pck_over_thresholds(pck_thresholds_results, output_folder_path, ds_name=None, pck_thresholds_std=None):
+    """
+    Plots the average PCK of each algorithm over the PCK thresholds; if pck_thresholds_std is given (std over sequences
+    of the average PCK, indexed like pck_thresholds_results), a +-1 std band is drawn around each line
+    """
     # sort thresholds
-    thresholds = list(pck_thresholds_results.keys())
-    thresholds.sort()
-    # group results by algorithm
-    algos = dict()
+    thresholds = sorted(pck_thresholds_results.keys())
+
+    # collect results as long-form data, as expected by seaborn
+    rows = list()
+    for th in thresholds:
+        for (algo_name, metric) in pck_thresholds_results[th].items():
+            std = pck_thresholds_std[th][algo_name].get_value()[1] * 100 if pck_thresholds_std else .0
+            rows.append({'algo': plots_utils.RENAMING.get(algo_name, algo_name), 'algo_key': algo_name,
+                         'threshold': th, 'pck': metric.get_value()[1] * 100, 'std': std})
+    data = pd.DataFrame(rows)
+
+    # colors and line styles of each algorithm, moveEnet is always drawn with a solid line
+    names = list(dict.fromkeys(data['algo']))
     colors = dict()
+    dashes = dict()
     # copy, so that popping colors does not consume the module-level list across calls
     extra_colors = list(plots_utils.OTHER_COLORS)
-    for th in thresholds:
-
-        algo_metrics = pck_thresholds_results[th]
-        for (algo_name, metric) in algo_metrics.items():
-
-            if algo_name not in algos.keys():
-                algos[algo_name] = list()
-
-            values = metric.get_value()
-            # joints_values = values[0]
-            avg_value = values[1]
-
-            algos[algo_name].append(avg_value * 100)
-
-    for algo_name in algos.keys():
+    other_dashes = [(4, 2), (1, 2), (4, 2, 1, 2), (6, 2, 1, 2, 1, 2)]
+    for name, algo_name in data[['algo', 'algo_key']].drop_duplicates().itertuples(index=False):
         try:
-            colors[algo_name] = plots_utils.ALGO_COLORS[algo_name]
+            colors[name] = plots_utils.ALGO_COLORS[algo_name]
         except KeyError:
             if not extra_colors:
                 extra_colors = list(plots_utils.OTHER_COLORS)
-            colors[algo_name] = extra_colors.pop()
-
+            colors[name] = extra_colors.pop()
+        dashes[name] = '' if name == 'moveEnet' else (other_dashes.pop(0) if other_dashes else (4, 2))
 
     # setup the figure
     my_dpi = 96
@@ -126,41 +129,41 @@ def plot_pck_over_thresholds(pck_thresholds_results, output_folder_path, ds_name
         figure_name = f'Dataset {ds_name}, Average PCK'
     else:
         figure_name = f'Global Average PCK'
-    fig = plt.figure(num=figure_name,
-                     figsize=(2048 / my_dpi, 900 / my_dpi),
-                     dpi=96)
-    ax = fig.add_subplot(111)
+    with sns.axes_style('whitegrid'):
+        fig = plt.figure(num=figure_name,
+                         figsize=(2048 / my_dpi, 900 / my_dpi),
+                         dpi=96)
+        ax = fig.add_subplot(111)
     fig.tight_layout(pad=10)
 
     # plot pcks
-    linestyles = ['--',':','-.','dashed','dashdot']
-    for algo_name, pcks in algos.items():
-        # ax.plot(thresholds, pcks, color=np.random.rand(3, ), marker="o", label=f'{algo_name}',
-        #         linestyle='-', alpha=1.0)
-        if algo_name in plots_utils.RENAMING.keys():
-            name = plots_utils.RENAMING[algo_name]
-        else:
-            name = algo_name
-        if name == 'moveEnet': linestyle = '-'
-        else:
-            try: linestyle = linestyles.pop(0)
-            except: linestyle = '--'
+    sns.lineplot(data=data, x='threshold', y='pck', hue='algo', style='algo', hue_order=names, style_order=names,
+                 palette=colors, dashes=dashes, markers=['o'] * len(names), markersize=10, linewidth=4, ax=ax)
 
-        ax.plot(thresholds, pcks, marker="o", label=f'{name}',linewidth=4, color = colors[algo_name],
-                linestyle=linestyle, alpha=1.0)
+    # plot std bands
+    if pck_thresholds_std:
+        for name, algo_data in data.groupby('algo', sort=False):
+            ax.fill_between(algo_data['threshold'], np.clip(algo_data['pck'] - algo_data['std'], 0, 100),
+                            np.clip(algo_data['pck'] + algo_data['std'], 0, 100), color=colors[name], alpha=0.15,
+                            linewidth=0)
+
+    # one tick for each requested threshold
+    ax.set_xticks(thresholds)
+    ax.set_xticklabels([f'{th:g}' for th in thresholds], rotation=45 if len(thresholds) > 10 else 0)
 
     # set axis limits
-    # ax.set_xlim([0, 1])
+    # small margin, so that the markers of the first and last thresholds are not clipped
+    x_margin = 0.02 * (thresholds[-1] - thresholds[0]) or 0.05
+    ax.set_xlim([thresholds[0] - x_margin, thresholds[-1] + x_margin])
     ax.set_ylim([0, 100])
 
-    plt.grid()
-
     # labels and title
-    plt.xlabel('PCK thresholds', fontsize=32, labelpad=None)
-    plt.ylabel(f'Average PCK %', fontsize=32, labelpad=5)
+    ax.set_xlabel('PCK thresholds', fontsize=32)
+    ax.set_ylabel(f'Average PCK %', fontsize=32, labelpad=5)
     # fig.suptitle(figure_name, fontsize=30, y=0.97)
-    plt.tick_params(axis='both', which='major', labelsize=24)
-    ax.legend(fontsize=24, loc='lower right')
+    ax.tick_params(axis='both', which='major', labelsize=24)
+    ax.legend(fontsize=24, loc='lower right', title='± 1 std over sequences' if pck_thresholds_std else None,
+              title_fontsize=20)
 
     # save plot
     if ds_name:
@@ -1005,7 +1008,8 @@ def main(args):
 
         if metric_name == 'pck':
 
-            plot_pck_over_thresholds(metric_results, output_folder_path)
+            plot_pck_over_thresholds(metric_results, output_folder_path,
+                                     pck_thresholds_std=results['global_std']['pck'])
 
             # create table
             header = [key for key in ds_constants.HPECoreSkeleton.KEYPOINTS_MAP.keys()]
