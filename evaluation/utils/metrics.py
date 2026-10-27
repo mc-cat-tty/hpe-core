@@ -105,6 +105,12 @@ class PCK(_SamplesAccumulator):
 
         return pck_joints, pck_avg
 
+    def get_weights(self):
+        """
+        Returns the number of samples the PCK of each joint is computed on, i.e. the number of annotated GT joints
+        """
+        return np.sum(gt_annotated(self.gt_joints), axis=0)
+
 
 class RMSE(_SamplesAccumulator):
 
@@ -171,6 +177,13 @@ class MPJPE(_SamplesAccumulator):
 
         return res.flatten(), mpje_avg
 
+    def get_weights(self):
+        """
+        Returns the number of samples the MPJPE of each joint is computed on, i.e. the number of annotated GT joints
+        whose prediction has been detected
+        """
+        return np.sum(np.logical_and(gt_annotated(self.gt_joints), pred_detected(self.predicted_joints)), axis=0)
+
 
 class MissedDetections(_SamplesAccumulator):
     """
@@ -206,6 +219,66 @@ class MissedDetections(_SamplesAccumulator):
         missed_avg = np.mean(missed_joints)
 
         return missed_joints, missed_avg
+
+    def get_weights(self):
+        """
+        Returns the number of samples the missed detections of each joint are computed on, i.e. the number of
+        annotated GT joints
+        """
+        return np.sum(gt_annotated(self.gt_joints), axis=0)
+
+
+class SequencesWeightedStd:
+    """
+    Class for computing the standard deviation of a metric (PCK, MPJPE or MissedDetections) over sequences; each
+    sequence is weighted by the number of samples its metric is computed on, so that the weighted mean of the
+    per-sequence values is the metric computed on the samples pooled over all sequences
+    """
+
+    def __init__(self):
+        self._values = []
+        self._weights = []
+
+    def update_samples(self, joints_values: np.array, joints_weights: np.array) -> None:
+        """
+        Accumulates the metric computed on a single sequence.
+        Parameters:
+            joints_values (numpy.array): metric values for each single joint, with shape [joints_num]
+            joints_weights (numpy.array): number of samples the metric of each joint is computed on (metric's
+                                          get_weights()), with shape [joints_num]
+        """
+        self._values.append(np.asarray(joints_values, dtype=float))
+        self._weights.append(np.asarray(joints_weights, dtype=float))
+
+    def get_value(self):
+        """
+        Computes the weighted standard deviations over the accumulated sequences.
+        Return:
+            numpy.array: standard deviation of the metric of each single joint
+            float: standard deviation of the metric averaged over all joints
+        """
+
+        weights = np.stack(self._weights)
+        # joints without samples in a sequence have an undefined (nan) value, and no weight
+        values = np.where(weights > 0, np.stack(self._values), 0.)
+        std_joints = _weighted_std(values, weights)
+
+        # average over the joints with samples of each sequence, weighted by the total samples of the sequence
+        valid_joints_num = np.sum(weights > 0, axis=1)
+        avg_values = np.divide(np.sum(values, axis=1), valid_joints_num, out=np.zeros(len(values)),
+                               where=valid_joints_num > 0)
+        std_avg = _weighted_std(avg_values, np.sum(weights, axis=1))
+
+        return std_joints, std_avg
+
+
+def _weighted_std(values: np.array, weights: np.array) -> np.array:
+    """
+    Computes the weighted (population) standard deviation of values along the first axis
+    """
+    total_weights = np.sum(weights, axis=0)
+    mean = np.sum(values * weights, axis=0) / total_weights
+    return np.sqrt(np.sum(weights * np.square(values - mean), axis=0) / total_weights)
 
 
 def gt_annotated(gt_joints: np.array) -> np.array:

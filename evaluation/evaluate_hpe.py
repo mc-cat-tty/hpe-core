@@ -406,7 +406,11 @@ def tabulate_metric_over_algorithms(algo_metrics: dict, headers: list, descr: Op
             joints_values = np.around(values[0], decimals=2)
         # joints_values = values[0]
         # avg_value = np.max(values[1])
-        avg_value = np.around(np.mean(joints_values), decimals=2)
+        if isinstance(metric, metrics_utils.SequencesWeightedStd):
+            # the std of the average over joints is not the average of the stds of the joints
+            avg_value = np.around(values[1], decimals=2)
+        else:
+            avg_value = np.around(np.mean(joints_values), decimals=2)
         # joints_values = values[0] # this mean matches the mean in the data in boxplot (green line), not the median (orange line)
         table_row = joints_values.tolist()
         if isinstance(avg_value, np.ndarray):
@@ -908,6 +912,26 @@ def update_global_metrics(global_results: dict, global_samples: list, args) -> N
             global_results[metric_name][algo_name].update_samples(skeletons_pred_eval, skeletons_gt_eval)
 
 
+def update_sequences_std(sequences_std: dict, ds_results: dict) -> None:
+    for metric_name in ('pck', 'mpjpe', 'missed'):
+        if metric_name not in ds_results.keys():
+            continue
+
+        # PCK results are further indexed by threshold
+        if metric_name == 'pck':
+            metric_groups = ds_results['pck'].items()
+        else:
+            metric_groups = [(None, ds_results[metric_name])]
+
+        for group_key, algos in metric_groups:
+            std_algos = sequences_std.setdefault(metric_name, dict()).setdefault(group_key, dict())
+            for algo_name, metric in algos.items():
+                if algo_name not in std_algos.keys():
+                    std_algos[algo_name] = metrics_utils.SequencesWeightedStd()
+
+                std_algos[algo_name].update_samples(metric.get_value()[0], metric.get_weights())
+
+
 def main(args):
     plt.close('all')
 
@@ -921,6 +945,8 @@ def main(args):
     results = dict()
     results['datasets'] = dict()
     results['global'] = dict()
+    # weighted std over sequences of the global metrics, indexed by metric name and PCK threshold (None otherwise)
+    results['global_std'] = dict()
     # import GT from yarp
     datasets_path = Path(args.datasets_path)
 
@@ -945,6 +971,7 @@ def main(args):
             results['datasets'][r['results_key']] = r['ds_results']
             reports[r['results_key']] = r['report']
             update_global_metrics(results['global'], r['global_samples'], args)
+            update_sequences_std(results['global_std'], r['ds_results'])
 
             # plots are created in the main process, so that they are shown by plt.show()
             if (args.plot_traj):
@@ -992,6 +1019,11 @@ def main(args):
                                                 to_latex=to_latex,
                                                 file_path=output_folder_path,
                                                 file_stem=f'pck_{th}')
+                tabulate_metric_over_algorithms(results['global_std']['pck'][th], header,
+                                                descr=f'Global PCK std over sequences for threshold {th}',
+                                                to_latex=to_latex,
+                                                file_path=output_folder_path,
+                                                file_stem=f'pck_{th}_std')
 
         elif metric_name == 'rmse':
             if (not (to_latex)):
@@ -1026,6 +1058,11 @@ def main(args):
                                             to_latex=to_latex,
                                             file_path=output_folder_path,
                                             file_stem='mpjpe')
+            tabulate_metric_over_algorithms(results['global_std']['mpjpe'][None], header,
+                                            descr=f'Global MPJPE std over sequences',
+                                            to_latex=to_latex,
+                                            file_path=output_folder_path,
+                                            file_stem='mpjpe_std')
 
             plot_boxplot(metric_results,
                          descr=f'Global MPJPE results',
@@ -1042,6 +1079,11 @@ def main(args):
                                             to_latex=to_latex,
                                             file_path=output_folder_path,
                                             file_stem='missed')
+            tabulate_metric_over_algorithms(results['global_std']['missed'][None], header,
+                                            descr=f'Global missed detections std over sequences',
+                                            to_latex=to_latex,
+                                            file_path=output_folder_path,
+                                            file_stem='missed_std')
             
     plt.show()
 
