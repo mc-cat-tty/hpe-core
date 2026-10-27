@@ -2,10 +2,45 @@
 import numpy as np
 
 
-class PCK:
+class _SamplesAccumulator:
+    """
+    Base class for metrics accumulating samples over multiple calls of update_samples(); samples are stored as a list of
+    chunks and concatenated only when accessed, since concatenating at every update (np.append) would copy all the data
+    accumulated so far, with quadratic cost in the number of updates
+    """
+
+    _fields = ('predicted_joints', 'gt_joints')
+
+    def __init__(self):
+        self._chunks = {field: [] for field in self._fields}
+
+    def _accumulate(self, **arrays) -> None:
+        for field, array in arrays.items():
+            self._chunks[field].append(array)
+
+    def _get_samples(self, field: str):
+        chunks = self._chunks[field]
+        if not chunks:
+            return None
+        if len(chunks) > 1:
+            chunks[:] = [np.concatenate(chunks, axis=0)]
+        return chunks[0]
+
+    @property
+    def predicted_joints(self):
+        return self._get_samples('predicted_joints')
+
+    @property
+    def gt_joints(self):
+        return self._get_samples('gt_joints')
+
+
+class PCK(_SamplesAccumulator):
     """
     Class for computing HPE metric PCK (Percentage of Correct Keypoints)
     """
+
+    _fields = ('predicted_joints', 'gt_joints', 'reference_sizes')
 
     def __init__(self, threshold: float):
         """
@@ -16,10 +51,12 @@ class PCK:
 
         assert .0 < threshold <= 1.0, 'PCK threshold value must be > 0.0 and <= 1.0'
 
+        super().__init__()
         self.threshold = threshold
-        self.predicted_joints = None
-        self.gt_joints = None
-        self.reference_sizes = None
+
+    @property
+    def reference_sizes(self):
+        return self._get_samples('reference_sizes')
 
     def update_samples(self, predicted_joints: np.array, gt_joints: np.array, reference_sizes: np.array) -> None:
         """
@@ -31,15 +68,7 @@ class PCK:
             gt_joints (numpy.array): ground truth joints as a numpy array with shape [batch_size, joints_num, 2 or 3]
             reference_sizes (numpy.array): sizes of a body part (either head or torso, used for classifying joints as correct or not correct) as a numpy array with shape [batch_size, joints_num]
         """
-        if self.predicted_joints is None:
-            self.predicted_joints = predicted_joints
-            self.gt_joints = gt_joints
-            self.reference_sizes = reference_sizes
-
-        else:
-            self.predicted_joints = np.append(self.predicted_joints, predicted_joints, axis=0)
-            self.gt_joints = np.append(self.gt_joints, gt_joints, axis=0)
-            self.reference_sizes = np.append(self.reference_sizes, reference_sizes, axis=0)
+        self._accumulate(predicted_joints=predicted_joints, gt_joints=gt_joints, reference_sizes=reference_sizes)
 
     def get_value(self):
         """
@@ -77,11 +106,10 @@ class PCK:
         return pck_joints, pck_avg
 
 
-class RMSE:
+class RMSE(_SamplesAccumulator):
 
     def __init__(self):
-        self.predicted_joints = None
-        self.gt_joints = None
+        super().__init__()
 
     def update_samples(self, predicted_joints: np.array, gt_joints: np.array) -> None:
         """
@@ -92,13 +120,7 @@ class RMSE:
             predicted_joints (numpy.array): predicted joints as a numpy array with shape [batch_size, joints_num, 2 or 3]
             gt_joints (numpy.array): ground truth joints as a numpy array with shape [batch_size, joints_num, 2 or 3]
         """
-        if self.predicted_joints is None:
-            self.predicted_joints = predicted_joints
-            self.gt_joints = gt_joints
-
-        else:
-            self.predicted_joints = np.append(self.predicted_joints, predicted_joints, axis=0)
-            self.gt_joints = np.append(self.gt_joints, gt_joints, axis=0)
+        self._accumulate(predicted_joints=predicted_joints, gt_joints=gt_joints)
 
     def get_value(self):
         """
@@ -116,10 +138,9 @@ class RMSE:
 
         return normalized_rmse.flatten(), normalized_rmse_avg.flatten(), max_normalized_rmse
 
-class MPJPE:
+class MPJPE(_SamplesAccumulator):
     def __init__(self):
-        self.predicted_joints = None
-        self.gt_joints = None
+        super().__init__()
         
     def update_samples(self, predicted_joints: np.array, gt_joints: np.array) -> None:
         """
@@ -130,13 +151,7 @@ class MPJPE:
             predicted_joints (numpy.array): predicted joints as a numpy array with shape [batch_size, joints_num, 2 or 3]
             gt_joints (numpy.array): ground truth joints as a numpy array with shape [batch_size, joints_num, 2 or 3]
         """
-        if self.predicted_joints is None:
-            self.predicted_joints = predicted_joints
-            self.gt_joints = gt_joints
-
-        else:
-            self.predicted_joints = np.append(self.predicted_joints, predicted_joints, axis=0)
-            self.gt_joints = np.append(self.gt_joints, gt_joints, axis=0)
+        self._accumulate(predicted_joints=predicted_joints, gt_joints=gt_joints)
 
         
     def get_value(self):
@@ -157,15 +172,14 @@ class MPJPE:
         return res.flatten(), mpje_avg
 
 
-class MissedDetections:
+class MissedDetections(_SamplesAccumulator):
     """
     Class for computing the percentage of missed detections, i.e. annotated GT joints whose prediction has both
     coordinates equal to 0
     """
 
     def __init__(self):
-        self.predicted_joints = None
-        self.gt_joints = None
+        super().__init__()
 
     def update_samples(self, predicted_joints: np.array, gt_joints: np.array) -> None:
         """
@@ -176,13 +190,7 @@ class MissedDetections:
             predicted_joints (numpy.array): predicted joints as a numpy array with shape [batch_size, joints_num, 2 or 3]
             gt_joints (numpy.array): ground truth joints as a numpy array with shape [batch_size, joints_num, 2 or 3]
         """
-        if self.predicted_joints is None:
-            self.predicted_joints = predicted_joints
-            self.gt_joints = gt_joints
-
-        else:
-            self.predicted_joints = np.append(self.predicted_joints, predicted_joints, axis=0)
-            self.gt_joints = np.append(self.gt_joints, gt_joints, axis=0)
+        self._accumulate(predicted_joints=predicted_joints, gt_joints=gt_joints)
 
     def get_value(self):
         """
