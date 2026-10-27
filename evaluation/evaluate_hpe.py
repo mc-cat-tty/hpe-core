@@ -779,6 +779,25 @@ def main(args):
                 mpjpe = results['global']['mpjpe'][algo_name]
                 mpjpe.update_samples(skeletons_pred_eval, skeletons_gt_eval)
 
+            # compute missed detections, which are excluded from MPJPE and counted as incorrect by PCK
+            if len(args.pck) != 0 or args.mpjpe:
+
+                if 'missed' not in results['datasets'][results_key].keys():
+                    results['datasets'][results_key]['missed'] = dict()
+
+                missed = metrics_utils.MissedDetections()
+                missed.update_samples(skeletons_pred_eval, skeletons_gt_eval)
+                results['datasets'][results_key]['missed'][algo_name] = missed
+
+                if 'missed' not in results['global'].keys():
+                    results['global']['missed'] = dict()
+
+                if algo_name not in results['global']['missed'].keys():
+                    results['global']['missed'][algo_name] = metrics_utils.MissedDetections()
+
+                missed = results['global']['missed'][algo_name]
+                missed.update_samples(skeletons_pred_eval, skeletons_gt_eval)
+
 
         if (args.plot_traj):
             plot_predictions(output_ds_folder_path, results_key, t_window, skeletons_gt_window, algorithm_names,
@@ -864,6 +883,17 @@ def main(args):
                     plot_boxplot(metric_results,
                                  descr=f'MPJPE results for dataset {ds_name}',
                                  file_path=output_ds_folder_path / f'mpjpe_{ds_name}.png')
+
+                if metric_name == 'missed':
+                    print("\n-= MISSED DETECTIONS [%] =-")
+                    header = [key for key in ds_constants.HPECoreSkeleton.KEYPOINTS_MAP.keys()]
+                    header.append('avg missed [%]')
+
+                    tabulate_metric_over_algorithms(metric_results, header,
+                                                    descr=f'Missed detections for dataset {ds_name}',
+                                                    to_latex=to_latex,
+                                                    file_path=output_ds_folder_path,
+                                                    file_stem=f'missed_{ds_name}')
                     
                     
     # iterate over global metrics and print results
@@ -929,6 +959,18 @@ def main(args):
             plot_boxplot(metric_results,
                          descr=f'Global MPJPE results',
                          file_path=output_folder_path / f'mpjpe.png')
+
+        elif metric_name == 'missed':
+            if (not (to_latex)):
+                print("\n-= MISSED DETECTIONS [%] =-")
+            header = [key for key in ds_constants.HPECoreSkeleton.KEYPOINTS_MAP.keys()]
+            header.append('avg missed [%]')
+
+            tabulate_metric_over_algorithms(metric_results, header,
+                                            descr=f'Global missed detections',
+                                            to_latex=to_latex,
+                                            file_path=output_folder_path,
+                                            file_stem='missed')
             
     plt.show()
 

@@ -60,12 +60,15 @@ class PCK:
         # compute euclidean distances between joints
         distances = np.linalg.norm(self.predicted_joints - self.gt_joints, axis=2)
 
-        # compute correct keypoints
-        correct_keypoints = (distances <= np.array(thresholds_head)).astype(int)
+        # compute correct keypoints; non detected joints (both coordinates equal to 0) are always incorrect, even if
+        # the GT joint lies within the threshold from the image origin
+        correct_keypoints = np.logical_and(distances <= np.array(thresholds_head),
+                                           pred_detected(self.predicted_joints)).astype(int)
 
         # remove not annotated keypoints from pck computation
-        correct_keypoints = correct_keypoints * (self.gt_joints[:, :, 0] != -1).astype(int)
-        annotated_keypoints_num = np.sum((self.gt_joints[:, :, 0] != -1).astype(int), axis=0)
+        annotated = gt_annotated(self.gt_joints)
+        correct_keypoints = correct_keypoints * annotated.astype(int)
+        annotated_keypoints_num = np.sum(annotated.astype(int), axis=0)
 
         # compute pck
         pck_joints = np.sum(correct_keypoints, axis=0) / annotated_keypoints_num
@@ -141,28 +144,75 @@ class MPJPE:
         Computes MPJPE (Mean Per Joint Position Error)
         """
     
-        # # compute euclidean distances between joints
+        # compute euclidean distances between joints
         distances = np.linalg.norm(self.predicted_joints - self.gt_joints, axis=2)
-        
-        # TODO: what if a gt joint is not present in a frame? get the number of gt joints by
-        # gt_num = np.sum(gt_joints == 0)
-        mpje = np.sum(distances, axis=0) / len(distances)
-        
-        # compute errors wihtout considering non detected joints    
-        dist = np.zeros((len(self.gt_joints),13))
-        count = np.zeros((13))
-        for i in range(13):
-            for j in range(len(self.gt_joints)):
-                # ignore -inf values in ground truth joints
-                if(self.predicted_joints[j,i,0]!=0 and self.predicted_joints[j,i,1]!=0 and self.gt_joints[j,i,1] > 0 
-                   and self.gt_joints[j,i,0] > 0):
-                    dist[j,i] = np.linalg.norm(self.predicted_joints[j,i,:] - self.gt_joints[j,i,:], axis=0)
-                    count[i] = count[i] + 1
-        res = np.sum(dist, axis=0) / count
-    
+
+        # compute errors without considering non annotated GT joints and non detected joints (both coordinates
+        # equal to 0); non detected joints are tracked by metric MissedDetections
+        valid = np.logical_and(gt_annotated(self.gt_joints), pred_detected(self.predicted_joints))
+        res = np.sum(distances * valid, axis=0) / np.sum(valid, axis=0)
+
         mpje_avg = np.mean(res)
-    
+
         return res.flatten(), mpje_avg
+
+
+class MissedDetections:
+    """
+    Class for computing the percentage of missed detections, i.e. annotated GT joints whose prediction has both
+    coordinates equal to 0
+    """
+
+    def __init__(self):
+        self.predicted_joints = None
+        self.gt_joints = None
+
+    def update_samples(self, predicted_joints: np.array, gt_joints: np.array) -> None:
+        """
+        Accumulates data that will be used for computing the missed detections (with function get_value()).
+        It expects predicted_joints and gt_joints with shape [batch_size, joints_num, 2 or 3] and
+        not annotated joints as [-1, -1] or [-1, -1, -1]
+        Parameters:
+            predicted_joints (numpy.array): predicted joints as a numpy array with shape [batch_size, joints_num, 2 or 3]
+            gt_joints (numpy.array): ground truth joints as a numpy array with shape [batch_size, joints_num, 2 or 3]
+        """
+        if self.predicted_joints is None:
+            self.predicted_joints = predicted_joints
+            self.gt_joints = gt_joints
+
+        else:
+            self.predicted_joints = np.append(self.predicted_joints, predicted_joints, axis=0)
+            self.gt_joints = np.append(self.gt_joints, gt_joints, axis=0)
+
+    def get_value(self):
+        """
+        Computes metric using the accumulated data.
+        Return:
+            numpy.array: percentage of missed detections for each single joint
+            float: average of the percentages computed over all joints
+        """
+
+        annotated = gt_annotated(self.gt_joints)
+        missed = np.logical_and(annotated, np.logical_not(pred_detected(self.predicted_joints)))
+        missed_joints = np.sum(missed, axis=0) / np.sum(annotated, axis=0) * 100
+        missed_avg = np.mean(missed_joints)
+
+        return missed_joints, missed_avg
+
+
+def gt_annotated(gt_joints: np.array) -> np.array:
+    """
+    Returns a boolean mask with shape [batch_size, joints_num], True where the GT joint is annotated
+    """
+    return np.all(gt_joints > 0, axis=2)
+
+
+def pred_detected(predicted_joints: np.array) -> np.array:
+    """
+    Returns a boolean mask with shape [batch_size, joints_num], False where the predicted joint has all coordinates
+    equal to 0 (i.e. the joint has not been detected)
+    """
+    return np.any(predicted_joints != 0, axis=2)
     
     # def print_mpjpe(mpjpe, keypoints_str):
     #     for ei, error in enumerate(mpjpe):
