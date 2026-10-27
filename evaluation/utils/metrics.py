@@ -263,11 +263,16 @@ class SequencesWeightedStd:
         values = np.where(weights > 0, np.stack(self._values), 0.)
         std_joints = _weighted_std(values, weights)
 
-        # average over the joints with samples of each sequence, weighted by the total samples of the sequence
-        valid_joints_num = np.sum(weights > 0, axis=1)
-        avg_values = np.divide(np.sum(values, axis=1), valid_joints_num, out=np.zeros(len(values)),
-                               where=valid_joints_num > 0)
-        std_avg = _weighted_std(avg_values, np.sum(weights, axis=1))
+        # the global average is the mean over joints of the pooled joint values, i.e. the sum over sequences and joints
+        # of the values weighted by the share of samples of each joint coming from each sequence (divided by the number
+        # of joints); averaging the joints of each sequence with these shares, and weighting each sequence by the sum of
+        # its shares, makes the weighted mean of the per-sequence averages equal to the global average
+        joints_weights = np.sum(weights, axis=0)
+        shares = np.divide(weights, joints_weights, out=np.zeros_like(weights), where=joints_weights > 0)
+        sequences_weights = np.sum(shares, axis=1)
+        avg_values = np.divide(np.sum(shares * values, axis=1), sequences_weights, out=np.zeros(len(values)),
+                               where=sequences_weights > 0)
+        std_avg = _weighted_std(avg_values, sequences_weights)
 
         return std_joints, std_avg
 
