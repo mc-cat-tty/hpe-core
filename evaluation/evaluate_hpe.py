@@ -1,3 +1,8 @@
+"""
+E.g.: python -m evaluation.evaluate_hpe -o assets/MoveENet_batch64_parallel/ -mpjpe -pck 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0 -p ../datasets/eros_batched_64/h36m/ -d ../datasets/h36m
+"""
+
+
 import argparse
 import io
 import matplotlib.pyplot as plt

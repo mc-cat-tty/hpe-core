@@ -3,6 +3,8 @@ Copyright (C) 2021 Event-driven Perception for Robotics
 Author: Gaurvi Goyal
 
 Refactor by: @mc-cat-tty
+
+E.g.: python -m datasets.h36m.h36m_to_eros --input_folder <EH36M-FOLDER> --output_folder <EH36M-FOLDER> --write_images --write_annotation --from_scratch --ts_scaler 1 --inspect_every 200
 """
 
 import argparse
