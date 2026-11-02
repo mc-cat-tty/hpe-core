@@ -12,6 +12,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Optional
+import re
 
 import cv2, os, contextlib, threading
 import numpy as np
@@ -24,6 +25,10 @@ from datasets.utils.events_representation import EROS
 from datasets.utils.export import ensure_location, str2bool, get_movenet_keypoints, get_center, get_torso_length
 from bimvee.importIitYarp import importIitYarp as import_dvs
 import bimvee.importIitYarp as iit_yarp
+
+SEQUENCE_GT_FILENAME_PREFIX = r"gt_poses_"
+SEQUENCE_GT_FILENAME_FORMAT = SEQUENCE_GT_FILENAME_PREFIX + "{sequence_name}.json"
+SEQUENCE_GT_FILENAME_RE = re.compile(SEQUENCE_GT_FILENAME_PREFIX + r"(\w+)\.json")
 
 ### Some facility objects and functions to collect output from parallel processes and write it to stdout from the main process ###
 _log_queue = None
@@ -139,26 +144,28 @@ def export_to_eros(dvs_dir: Path, skeleton_file: Path, output_path: Path, inspec
 
     return poses_movenet
 
-def append_gt_poses(args, output_json, poses_movenet):
-    # Writing the GT, appending to the previous annotations if any
-    if args.write_annotation and output_json is not None:
-        poses = json.loads(output_json.read_text()) if output_json.exists() else []
-        poses.extend(poses_movenet)
-        output_json.write_text(json.dumps(poses, ensure_ascii=False))
 
+def write_gt_pose(args, output_dir_path: Path, sequence_name: str, poses_movenet: list):
+    if not args.write_annotation or sequence_name is None: return
 
-def processed_sequences(json_file: Path):
-    if not json_file.exists():
-        return set()
-    return {sample['original_sample'] for sample in json.loads(json_file.read_text())}
+    output_filename = SEQUENCE_GT_FILENAME_FORMAT.format(sequence_name=sequence_name)
+    tmp_output_file_path = output_dir_path / f"tmp_{output_filename}"
+    output_file_path = output_dir_path / output_filename
+    tmp_output_file_path.write_text(json.dumps(poses_movenet, ensure_ascii=False))
+    tmp_output_file_path.replace(output_file_path)
 
+def processed_sequences(output_dir_path: Path):
+    dir_files = filter(lambda f: f.is_file(), output_dir_path.glob(f"{SEQUENCE_GT_FILENAME_PREFIX}*"))
+    filenames_match = map(lambda filename: SEQUENCE_GT_FILENAME_RE.fullmatch(filename.name), dir_files)
+    sequences = set(m.group(1) for m in filenames_match if m is not None)
+    return sequences
 
 def convert_seq_to_eros(args, already_done, output_path_images, output_path_inspect, sample):
     writer = QueueWriter(_log_queue)
     with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
         poses, msg = _convert_seq_to_eros(args, already_done, output_path_images, output_path_inspect, sample)
     writer.flush()
-    return poses, msg
+    return sample, poses, msg
 
 
 def _convert_seq_to_eros(args, already_done, output_path_images, output_path_inspect, sample):
@@ -233,7 +240,6 @@ def main():
     
     output_path_images = (args.output_folder / subfolder / f'h36m_EROS{suffix}').resolve()
     output_path_anno = (args.output_folder / subfolder / f'h36m_anno{suffix}').resolve()
-    output_json = output_path_anno / 'poses.json'
     ensure_location(str(output_path_images))
     ensure_location(str(output_path_anno))
 
@@ -244,8 +250,6 @@ def main():
         output_path_inspect = (args.output_folder / subfolder / f'h36m_EROS_inspect{suffix}').resolve()
         ensure_location(str(output_path_inspect))
 
-    if args.from_scratch:
-        output_json.unlink(missing_ok=True)
 
     sequences = args.sequences
     if sequences is None:
@@ -258,7 +262,13 @@ def main():
         sequences = sequences[:1]
     if not sequences:
         sys.exit('No sequence left to process')
-    already_done = processed_sequences(output_json)
+
+    already_done = processed_sequences(output_path_anno)
+    if args.from_scratch:
+        for f in output_path_anno.glob(f"{SEQUENCE_GT_FILENAME_PREFIX}*"):
+            if SEQUENCE_GT_FILENAME_RE.fullmatch(f.name): f.unlink()
+        already_done = set()
+    print("Skippint already done sequences: " + str(already_done))
 
     # The sequences list is final here: the number of workers depends on it
     workers = int(cpu_count()*1.5)
@@ -269,12 +279,14 @@ def main():
         log_reader = threading.Thread(target=_drain_logs, args=(log_queue,), daemon=True)
         log_reader.start()
         with Pool(workers, initializer=init_convert_seq_to_ros, initargs=(log_queue,)) as p:
-            for poses, msg in tqdm(p.imap_unordered(partial(convert_seq_to_eros, args, already_done, output_path_images, output_path_inspect), sequences), total=len(sequences), unit='sequence'):
-                if poses: append_gt_poses(args, output_json, poses)
+            for seq_name, poses, msg in tqdm(p.imap_unordered(partial(convert_seq_to_eros, args, already_done, output_path_images, output_path_inspect), sequences), total=len(sequences), unit='sequence'):
+                if poses is not None: write_gt_pose(args, output_path_anno, seq_name, poses)
                 if msg: tqdm.write(msg)
         log_queue.put(None)
         log_reader.join()
     
+    print("If you are happy with the generated sequences, merge them in a single JSON file with merge_annotations.py")
+    print(f"\tHere is the command ready for use: python -m datasets.h36m.merge_annotations --annotations_folder {output_path_anno}")
 
 
 if __name__ == '__main__':
