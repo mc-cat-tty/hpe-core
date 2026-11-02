@@ -145,8 +145,19 @@ def export_to_eros(dvs_dir: Path, skeleton_file: Path, output_path: Path, inspec
     return poses_movenet
 
 
+def skeleton_in_frame(keypoints) -> bool:
+    """True if all the normalized (x, y) keypoints lie within the frame, i.e. in [0, 1]."""
+    xy = np.reshape(keypoints, [-1, 3])[:, :2]
+    return bool(np.all(np.isfinite(xy)) and np.all((xy >= 0) & (xy <= 1)))
+
+
 def write_gt_pose(args, output_dir_path: Path, sequence_name: str, poses_movenet: list):
     if not args.write_annotation or sequence_name is None: return
+
+    n_outside = sum(not skeleton_in_frame(p['keypoints']) for p in poses_movenet)
+    if n_outside:
+        tqdm.write(f"Warning: {sequence_name}: {n_outside}/{len(poses_movenet)} samples "
+                   f"have a skeleton outside the frame")
 
     output_filename = SEQUENCE_GT_FILENAME_FORMAT.format(sequence_name=sequence_name)
     tmp_output_file_path = output_dir_path / f"tmp_{output_filename}"
@@ -199,6 +210,9 @@ def parse_args():
                    help='folder with the YARP sequences (one cam<C>_S<N>_<Action> folder each)')
     p.add_argument('--output_folder', type=Path, required=True,
                    help='folder where the frames and annotations are written (training/ or tester/ sub-folders)')
+    p.add_argument('--subfolder', default=None,
+                   help='sub-folder of --output_folder where frames and annotations are saved '
+                        '(default: training, or tester in --dev mode)')
     p.add_argument('--sequences', nargs='+', default=None,
                    help='sequence folders to process (default: all the sub-folders of --input_folder)')
     p.add_argument('--eros_kernel', default=8, type=int)
@@ -237,7 +251,9 @@ def main():
         subfolder, suffix = 'tester', ''
     else:
         subfolder, suffix = 'training', '_upper' if args.upperbody else ''
-    
+    if args.subfolder is not None:
+        subfolder = args.subfolder
+
     output_path_images = (args.output_folder / subfolder / f'h36m_EROS{suffix}').resolve()
     output_path_anno = (args.output_folder / subfolder / f'h36m_anno{suffix}').resolve()
     ensure_location(str(output_path_images))
