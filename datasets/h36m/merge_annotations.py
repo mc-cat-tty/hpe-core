@@ -63,7 +63,7 @@ def main(args):
         do_overwrite_output_file = get_binary_answer("Output file already exists, overwrite it [Y/n]?")
         if not do_overwrite_output_file: return
 
-        poses = list()
+    poses = list()
     for file in annotation_files:
         file_poses = json.loads(file.read_text())
         poses.extend(file_poses)
@@ -72,7 +72,7 @@ def main(args):
     tmp_output_path.write_text(json.dumps(poses))
     tmp_output_path.replace(output_path)
 
-    print(f"Done! saved merged file in {output_path.name}")
+    print(f"Done! saved merged file in {output_path.name} containing {len(poses)} annotated frames")
 
     do_delte_partial_annotations = get_binary_answer("Do you want to delete the annotation files [Y/n]?")
     
