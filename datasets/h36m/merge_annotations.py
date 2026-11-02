@@ -15,10 +15,9 @@ SEQUENCE_GT_FILENAME_RE = re.compile(SEQUENCE_GT_FILENAME_PREFIX + r"(\w+)\.json
 
 
 def get_binary_answer(prompt="Do you like events?") -> bool:
-    print(prompt+" ", end="")
-
     ans = ''
     while ans not in ('y', 'n'):
+        print(prompt+" ", end="")
         ans = input()
         ans = ans.lower()
     
@@ -58,15 +57,24 @@ def main(args):
         return
 
     output_path = args.annotations_folder / args.output_filename
-    
+
+    do_append_to_output_file = False
+
     if output_path.is_file():
-        do_overwrite_output_file = get_binary_answer("Output file already exists, overwrite it [Y/n]?")
-        if not do_overwrite_output_file: return
+        do_append_to_output_file = get_binary_answer("Output file already exists, append anotations to it [Y/n]?")
+        
+        if not do_append_to_output_file:
+            do_overwrite_output_file = get_binary_answer("Output file already exists, overwrite it [Y/n]?")
+            if not do_overwrite_output_file: return
 
     poses = list()
     for file in annotation_files:
         file_poses = json.loads(file.read_text())
         poses.extend(file_poses)
+
+    if do_append_to_output_file:
+        old_content = json.loads(output_path.read_text())
+        poses.extend(old_content)
 
     tmp_output_path = args.annotations_folder / ("tmp"+args.output_filename)
     tmp_output_path.write_text(json.dumps(poses))
