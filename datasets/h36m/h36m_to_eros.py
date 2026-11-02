@@ -84,6 +84,7 @@ def export_to_eros(dvs_dir: Path, skeleton_file: Path, output_path: Path, inspec
     data_dvs['data']['left']['dvs']['ts'] /= args.ts_scaler
     iterator = batchIterator(data_dvs['data']['left']['dvs'], data_vicon)
     eros = EROS(kernel_size=args.eros_kernel, frame_width=args.frame_width, frame_height=args.frame_height)
+    need_frame = args.write_images or args.write_video or args.show or inspect_path is not None
 
     poses_movenet = []
     if args.write_video:
@@ -91,8 +92,9 @@ def export_to_eros(dvs_dir: Path, skeleton_file: Path, output_path: Path, inspec
                                     args.fps, (args.frame_width, args.frame_height))
 
     for fi, (events, pose, batch_size) in enumerate(iterator):
-        for ei in range(batch_size):
-            eros.update(vx=int(events['x'][ei]), vy=int(events['y'][ei]))
+        if need_frame:
+            for ei in range(batch_size):
+                eros.update(vx=int(events['x'][ei]), vy=int(events['y'][ei]))
 
         if fi < 2:  # Almost empty images, not beneficial for training
             kps_old = get_movenet_keypoints(pose, args.frame_height, args.frame_width)
@@ -101,7 +103,7 @@ def export_to_eros(dvs_dir: Path, skeleton_file: Path, output_path: Path, inspec
         if fi % skip != 0:
             continue
 
-        frame = eros.get_frame()
+        if need_frame: frame = eros.get_frame()
         sample_anno = {}
         sample_anno['img_name'] = f'{action_name}_{str(fi).zfill(5)}.jpg'
         sample_anno['ts'] = pose['ts']
@@ -112,7 +114,7 @@ def export_to_eros(dvs_dir: Path, skeleton_file: Path, output_path: Path, inspec
         sample_anno['keypoints_prev'] = kps_old
         sample_anno['original_sample'] = action_name
 
-        frame = cv2.GaussianBlur(frame, (args.gauss_kernel, args.gauss_kernel), 0)
+        if need_frame: frame = cv2.GaussianBlur(frame, (args.gauss_kernel, args.gauss_kernel), 0)
         if args.write_images:
             cv2.imwrite(str(output_path / sample_anno['img_name']), frame)
         if inspect_path is not None and len(poses_movenet) % args.inspect_every == 0:
