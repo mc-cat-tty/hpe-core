@@ -969,12 +969,18 @@ def main(args):
     executor = ProcessPoolExecutor(max_workers=args.workers, initializer=plt.switch_backend,
                                    initargs=('Agg',)) if args.workers > 1 else None
     sample_results = (executor.map if executor else map)(evaluate, data_samples.keys(), data_samples.values())
+    
+    sequences_number = 0
+    frames_number = 0
 
     try:
         # results are merged in the order of data_samples, so that global metrics do not depend on the scheduling
         for r in tqdm(sample_results, total=len(data_samples)):
             if r is None:
                 continue
+            
+            sequences_number += 1
+            frames_number += r['timestamps_eval'][0].size
 
             results['datasets'][r['results_key']] = r['ds_results']
             reports[r['results_key']] = r['report']
@@ -1093,7 +1099,11 @@ def main(args):
                                             to_latex=to_latex,
                                             file_path=output_folder_path,
                                             file_stem='missed_std')
-            
+
+        print(f"~~~~ Number of frames: {frames_number} ~~~")
+        print(f"~~~~ Number of sequences: {sequences_number} ~~~")
+        
+        
     plt.show()
 
 
