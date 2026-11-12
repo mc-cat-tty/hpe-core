@@ -4,7 +4,7 @@ Author: Gaurvi Goyal
 
 Refactor by: @mc-cat-tty
 
-Convert H3.6M dataset to generic events surface representation
+Convert E-H3.6M dataset to generic events surface representation
 """
 
 import argparse
@@ -211,6 +211,7 @@ def init_convert_seq_to_ros(queue):
 
 def parse_args(argParser: argparse.ArgumentParser):
     p = argParser
+    p.add_argument('--gauss_kernel', default=7, type=int, help="Size of the gaussian kernel to add blur during surface post-processing.")
     p.add_argument('--input_folder', type=Path, required=True,
                    help='folder with the YARP sequences (one cam<C>_S<N>_<Action> folder each)')
     p.add_argument('--output_folder', type=Path, required=True,
@@ -240,7 +241,6 @@ def parse_args(argParser: argparse.ArgumentParser):
     p.add_argument('--ts_scaler', default=1.0, type=float)
     p.add_argument('--upperbody', type=str2bool, nargs='?', const=True, default=False,
                    help='create annotation for upperbody only')
-    p.add_argument('--gauss_kernel', default=7, type=int)
     return p.parse_args()
 
 

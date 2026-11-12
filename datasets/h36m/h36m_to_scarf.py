@@ -7,6 +7,7 @@ E.g.: python -m datasets.h36m.h36m_to_scarf --input_folder <EH36M-FOLDER> --outp
 """
 
 import argparse
+from argparse import Namespace
 from .h36m_to_surf import run_conversion
 from datasets.utils.events_representation import ScarfSurface
 
@@ -16,14 +17,25 @@ def get_argparser():
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument('--frame_width', default=640)
     p.add_argument('--frame_height', default=480)
-    p.add_argument('--block_size', default=14, help="Receptive field size; square shape")
+    p.add_argument('--rf_size', default=14, help="Receptive field size; square shape")
     p.add_argument('--alpha', default=1.0, help="Events accumulation factor")
     p.add_argument('--C', default=0.3, help="Intensity")
     return p
 
+class ScarfSurfaceCLI(ScarfSurface):
+    @staticmethod
+    def surf_params_adaptr(args: Namespace) -> dict:
+        return {
+            "img_res": (args.frame_width, args.frame_height),
+            "rf_size": args.rf_size,
+            "alpha": args.alpha,
+            "C": args.C
+        }
+
+
 def main():
     p = get_argparser()
-    run_conversion(ScarfSurface, p)
+    run_conversion(ScarfSurfaceCLI, p)
 
 
 if __name__ == '__main__':
