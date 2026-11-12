@@ -95,7 +95,7 @@ def export_to_surf(dvs_dir: Path, skeleton_file: Path, output_path: Path, inspec
         raise TypeError("SurfaceClass not defined or not a subcalss of SurfaceInterface, choose a surface that implements SurfaceInterface")
    
     surf = SurfaceClass()
-    surf.build_surface(kernel_size=args.eros_kernel, frame_width=args.frame_width, frame_height=args.frame_height)
+    surf.build_surface(**SurfaceClass.surf_params_adaptr(args))
     need_frame = args.write_images or args.write_video or args.show or inspect_path is not None
 
     poses_movenet = []
@@ -240,6 +240,7 @@ def parse_args(argParser: argparse.ArgumentParser):
     p.add_argument('--ts_scaler', default=1.0, type=float)
     p.add_argument('--upperbody', type=str2bool, nargs='?', const=True, default=False,
                    help='create annotation for upperbody only')
+    p.add_argument('--gauss_kernel', default=7, type=int)
     return p.parse_args()
 
 

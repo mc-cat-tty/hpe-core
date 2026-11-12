@@ -7,8 +7,18 @@ E.g.: python -m datasets.h36m.h36m_to_eros --input_folder <EH36M-FOLDER> --outpu
 """
 
 import argparse
+from argparse import Namespace
 from .h36m_to_surf import run_conversion
 from datasets.utils.events_representation import ErosSurface
+
+class ErosSurfaceCLI(ErosSurface):
+    @staticmethod
+    def surf_params_adaptr(args: Namespace) -> dict:
+        return {
+            "kernel_size": args.eros_kernel,
+            "frame_width": args.frame_width,
+            "frame_height": args.frame_height
+        }
 
 def get_argparser():
     p = argparse.ArgumentParser(description='Convert the YARP H3.6M events and ground truth to EROS frames '
@@ -17,12 +27,12 @@ def get_argparser():
     p.add_argument('--eros_kernel', default=8, type=int)
     p.add_argument('--frame_width', default=640, type=int)
     p.add_argument('--frame_height', default=480, type=int)
-    p.add_argument('--gauss_kernel', default=7, type=int)
     return p
+
 
 def main():
     p = get_argparser()
-    run_conversion(ErosSurface, p)
+    run_conversion(ErosSurfaceCLI, p)
 
 
 if __name__ == '__main__':
