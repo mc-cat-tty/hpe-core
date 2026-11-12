@@ -231,9 +231,10 @@ class eventFrame:
 
 
 class ErosSurface(SurfaceInterface):
+    surface_name = "EROS"
+
     def build_surface(self, **kwargs):
         self.__eros = EROS(**kwargs)
-        self.surface_name = "EROS"
 
     @property
     def as_frame(self):
@@ -247,11 +248,12 @@ class ScarfSurface(SurfaceInterface):
     To use this surface, download and install scarf-py in your Python
     environment from https://github.com/mc-cat-tty/scarf-py/releases
     """
+    surface_name = "SCARF"
+    
     def build_surface(self, **kwargs):
         from scarf import SCARF
         self.__scarf = SCARF()
         self.__scarf.initialise(**kwargs)
-        self.surface_name = "SCARF"
 
     @property
     def as_frame(self):

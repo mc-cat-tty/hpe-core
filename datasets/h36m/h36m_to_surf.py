@@ -115,7 +115,7 @@ def export_to_surf(dvs_dir: Path, skeleton_file: Path, output_path: Path, inspec
         if fi % skip != 0:
             continue
 
-        if need_frame: frame = surf.get_surface()
+        if need_frame: frame = surf.as_frame
         sample_anno = {}
         sample_anno['img_name'] = f'{action_name}_{str(fi).zfill(5)}.jpg'
         sample_anno['ts'] = pose['ts']
@@ -244,6 +244,7 @@ def parse_args(argParser: argparse.ArgumentParser):
 
 
 def run_conversion(surfaceClass: type[SurfaceInterface], argParser: argparse.ArgumentParser):
+    global SurfaceClass
     SurfaceClass = surfaceClass
 
     args = parse_args(argParser)
@@ -288,7 +289,7 @@ def run_conversion(surfaceClass: type[SurfaceInterface], argParser: argparse.Arg
         for f in output_path_anno.glob(f"{SEQUENCE_GT_FILENAME_PREFIX}*"):
             if SEQUENCE_GT_FILENAME_RE.fullmatch(f.name): f.unlink()
         already_done = set()
-    print("Skippint already done sequences: " + str(already_done))
+    print("Skipping already done sequences: " + str(already_done))
 
     # The sequences list is final here: the number of workers depends on it
     workers = int(cpu_count()*1.5)
