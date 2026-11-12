@@ -3,7 +3,7 @@ from cv2 import cvtColor
 from cv2 import COLOR_GRAY2BGR
 import numpy as np
 from time import time
-
+from .surface_interface import SurfaceInterface
 
 def add_salt_and_pepper(image, low_th, high_th):
     saltpepper_noise = np.zeros_like(image)
@@ -228,3 +228,34 @@ class eventFrame:
 
     def update(self, vx, vy):
         self._image[vy, vx] += 1.0
+
+
+class ErosSurface(SurfaceInterface):
+    def build_surface(self, **kwargs):
+        self.__eros = EROS(**kwargs)
+        self.surface_name = "EROS"
+
+    @property
+    def as_frame(self):
+        return self.__eros.get_frame()
+
+    def update_surface(self, x: int, y: int):
+        self.__eros.update(x, y)
+
+class ScarfSurface(SurfaceInterface):
+    """
+    To use this surface, download and install scarf-py in your Python
+    environment from https://github.com/mc-cat-tty/scarf-py/releases
+    """
+    def build_surface(self, **kwargs):
+        from scarf import SCARF
+        self.__scarf = SCARF()
+        self.__scarf.initialise(**kwargs)
+        self.surface_name = "SCARF"
+
+    @property
+    def as_frame(self):
+        return self.__scarf.getSurface()
+
+    def update_surface(self, x: int, y: int):
+        self.__scarf.update(x, y, 1)
