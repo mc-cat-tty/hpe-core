@@ -257,7 +257,7 @@ class ScarfSurface(SurfaceInterface):
 
     @property
     def as_frame(self):
-        return np.uint8(self.__scarf.getSurface() * 255)
+        return np.clip(np.rint(self.__scarf.getSurface() * 255.0), 0, 255).astype(np.uint8)
 
     def update_surface(self, x: int, y: int):
         self.__scarf.update(x, y, 1)
